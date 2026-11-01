@@ -51,6 +51,51 @@ type TableStats struct {
 	PartitionFilesMax          int64
 	PartitionBytesMax          int64
 	PartitionTrackingTruncated bool
+
+	// FileStatsReused is true when the manifest-derived stats above were
+	// carried over from the previous collection instead of being read again,
+	// because the current snapshot and thresholds were unchanged.
+	FileStatsReused bool
+
+	// fileStatsKey identifies the inputs the manifest-derived stats were
+	// computed from; it is zero when they were not computed from manifests.
+	fileStatsKey fileStatsKey
+}
+
+// fileStatsKey captures everything manifest-derived stats depend on. Manifest
+// files are immutable, so a table's live files are fully determined by its
+// current snapshot. Partition specs are immutable per ID and need no key
+// entry. The thresholds are included because table properties (such as
+// write.target-file-size-bytes) can change without a new snapshot.
+type fileStatsKey struct {
+	tableUUID      string // distinguishes a dropped and recreated table
+	snapshotID     int64
+	smallFileBytes int64
+	largeFileBytes int64
+	maxTracked     int
+}
+
+// copyFileStats copies the manifest-derived stats from prev.
+func (s *TableStats) copyFileStats(prev *TableStats) {
+	s.ManifestCount = prev.ManifestCount
+	s.FileStatsCollected = prev.FileStatsCollected
+	s.DataFiles = prev.DataFiles
+	s.DataBytes = prev.DataBytes
+	s.DataRecords = prev.DataRecords
+	s.DeleteFiles = prev.DeleteFiles
+	s.DeleteRecords = prev.DeleteRecords
+	s.SmallFiles = prev.SmallFiles
+	s.LargeFiles = prev.LargeFiles
+	// Histograms are shared, not copied: published stats are never mutated.
+	s.FileSizes = prev.FileSizes
+	s.Partitions = prev.Partitions
+	s.PartitionFiles = prev.PartitionFiles
+	s.PartitionBytes = prev.PartitionBytes
+	s.PartitionRecords = prev.PartitionRecords
+	s.PartitionFilesMax = prev.PartitionFilesMax
+	s.PartitionBytesMax = prev.PartitionBytesMax
+	s.PartitionTrackingTruncated = prev.PartitionTrackingTruncated
+	s.fileStatsKey = prev.fileStatsKey
 }
 
 // SnapshotSummary is the delta reported by the current snapshot's summary.

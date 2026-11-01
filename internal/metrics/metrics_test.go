@@ -163,10 +163,11 @@ func TestCollectorRendersTableStats(t *testing.T) {
 func TestCollectorRetainsStatsForFailedTable(t *testing.T) {
 	now := time.Now()
 	st := &scrape.State{
-		Finished:   now,
-		Success:    true,
-		Discovered: 1,
-		Failing:    1,
+		Finished:        now,
+		Success:         true,
+		Discovered:      1,
+		Failing:         1,
+		FileStatsReused: 1,
 		Tables: []scrape.TableResult{
 			{
 				Ref:         scrape.TableRef{Catalog: "prod", Namespace: "db", Table: "tbl"},
@@ -190,6 +191,9 @@ func TestCollectorRetainsStatsForFailedTable(t *testing.T) {
 	}
 	if got := gaugeValue(t, mfs, "iceberg_table_data_files"); got != 5 {
 		t.Errorf("data_files = %v, want retained value 5", got)
+	}
+	if got := gaugeValue(t, mfs, "iceberg_exporter_tables_file_stats_reused"); got != 1 {
+		t.Errorf("tables_file_stats_reused = %v, want 1", got)
 	}
 	if got := gaugeValue(t, mfs, "iceberg_exporter_tables_failing"); got != 1 {
 		t.Errorf("tables_failing = %v, want 1", got)

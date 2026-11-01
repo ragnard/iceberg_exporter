@@ -188,6 +188,11 @@ var (
 		"Number of tables collected successfully in the latest refresh.",
 		nil, nil,
 	)
+	tablesFileStatsReusedDesc = prometheus.NewDesc(
+		"iceberg_exporter_tables_file_stats_reused",
+		"Number of tables in the latest refresh whose file statistics were reused without reading manifests, because their current snapshot was unchanged.",
+		nil, nil,
+	)
 	tablesFailingDesc = prometheus.NewDesc(
 		"iceberg_exporter_tables_failing",
 		"Number of tables whose latest collection failed.",
@@ -207,6 +212,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- tablesDiscoveredDesc
 	ch <- tablesCollectedDesc
 	ch <- tablesFailingDesc
+	ch <- tablesFileStatsReusedDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -230,6 +236,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	gauge(tablesDiscoveredDesc, float64(st.Discovered))
 	gauge(tablesCollectedDesc, float64(st.Collected))
 	gauge(tablesFailingDesc, float64(st.Failing))
+	gauge(tablesFileStatsReusedDesc, float64(st.FileStatsReused))
 
 	seenTables := make(map[string]struct{}, len(st.Tables))
 	duplicates := 0
