@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"os"
 	"regexp"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/ragnard/iceberg_exporter/internal/icebergstats"
+	"github.com/ragnard/iceberg_exporter/internal/rules"
 	"github.com/ragnard/iceberg_exporter/internal/scrape"
 )
 
@@ -117,13 +117,9 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 	}
 }
 
-// TestRulesReferenceKnownMetrics keeps prometheus/iceberg_exporter.rules.yml
-// in sync with the metric descriptors defined in this package.
+// TestRulesReferenceKnownMetrics keeps the embedded health rules in sync with
+// the metric descriptors defined in this package.
 func TestRulesReferenceKnownMetrics(t *testing.T) {
-	rules, err := os.ReadFile("../../prometheus/iceberg_exporter.rules.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	known := map[string]bool{}
 	ch := make(chan *prometheus.Desc, 256)
@@ -141,7 +137,7 @@ func TestRulesReferenceKnownMetrics(t *testing.T) {
 
 	ref := regexp.MustCompile(`\biceberg_(?:table|exporter)_[a-z0-9_]+`)
 	seen := map[string]bool{}
-	for _, name := range ref.FindAllString(string(rules), -1) {
+	for _, name := range ref.FindAllString(string(rules.Prometheus), -1) {
 		if seen[name] || recorded[name] {
 			continue
 		}

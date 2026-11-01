@@ -303,8 +303,9 @@ histogram_quantile(0.9, sum by (catalog, namespace, table, le) (iceberg_table_fi
 
 ## Table health rules
 
-[`prometheus/iceberg_exporter.rules.yml`](prometheus/iceberg_exporter.rules.yml)
-turns the metrics above into one series per unhealthy table and problem:
+The binary embeds a set of Prometheus rules
+([`internal/rules/iceberg_exporter.rules.yml`](internal/rules/iceberg_exporter.rules.yml))
+that turn the metrics above into one series per unhealthy table and problem:
 
 ```
 iceberg_table_problem{catalog, namespace, table, problem="small_files", severity="warning"}
@@ -312,7 +313,26 @@ iceberg_table_problem{catalog, namespace, table, problem="small_files", severity
 
 A series exists only while the problem is present; its value is the measured
 quantity (an age, ratio or count), so problems sort by severity of the
-condition. Load the file through `rule_files` in `prometheus.yml`.
+condition.
+
+Print the rules with the `rules` subcommand, so they always match the
+exporter version that produces the metrics:
+
+```bash
+# Plain rules file, for rule_files in prometheus.yml
+iceberg_exporter rules > /etc/prometheus/rules/iceberg_exporter.rules.yml
+
+# Prometheus Operator PrometheusRule; add the labels your ruleSelector matches
+iceberg_exporter rules -format prometheusrule \
+  -namespace monitoring -label release=prometheus | kubectl apply -f -
+
+# Same, from the container image
+docker run --rm iceberg_exporter rules -format prometheusrule
+```
+
+`-name` (default `iceberg-exporter`), `-namespace` and repeatable
+`-label key=value` set the PrometheusRule metadata; the `spec` is the plain
+rules file unchanged.
 
 ```promql
 # Every unhealthy table, with its problems
@@ -349,31 +369,12 @@ topk(10, iceberg_table_problem{problem="small_files"})
 | `format_v1` | info | Format version 1 |
 | `missing_statistics` | info | Over 100 GiB of data and no statistics file for the current snapshot |
 
-Thresholds are starting points, marked `Tune:` in the file. Copy the file and
-adjust them, or add label matchers (for example `{namespace!~"raw\\..*"}`) to
+Thresholds are starting points, marked `Tune:` in the file. Save the output,
+adjust them, and load your copy instead; or add label matchers (for example `{namespace!~"raw\\..*"}`) to
 scope a check. The file also records `iceberg:tables_with_problem:count` and
 defines one alert, `IcebergTableProblem`, for warning/critical problems held
 for 1h. `make rules-check` validates the file and runs its promtool unit tests
-(`prometheus/iceberg_exporter.rules_test.yml`) in a container.
-
-### Prometheus Operator
-
-[`prometheus/iceberg_exporter.prometheusrule.yaml`](prometheus/iceberg_exporter.prometheusrule.yaml)
-is a `monitoring.coreos.com/v1` `PrometheusRule` with the same groups, generated
-from the rules file above (`make rules-generate`; `make test` fails if it is
-stale). Apply it with `kubectl apply -n <namespace> -f`, and add the labels
-your Prometheus `ruleSelector` matches (for example `release: prometheus` for
-kube-prometheus-stack) with a kustomize patch or `kubectl label` instead of
-editing the generated file:
-
-```yaml
-# kustomization.yaml
-resources:
-  - iceberg_exporter.prometheusrule.yaml   # copied from this repository
-labels:
-  - pairs: {release: prometheus}
-    includeSelectors: false
-```
+(`internal/rules/iceberg_exporter.rules_test.yml`) in a container.
 
 Not covered, because table metadata does not record them: orphan files,
 commit conflicts, and dangling delete files (which need per-partition state).
@@ -387,7 +388,6 @@ make test-race
 make test-all-tags
 make vet
 make rules-check   # promtool via docker; CONTAINER=podman or PROMTOOL=promtool to override
-make rules-generate  # regenerate the PrometheusRule after editing the rules file
 ```
 
 `make test-all-tags` compiles and tests every optional backend so tagged files

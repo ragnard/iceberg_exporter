@@ -39,6 +39,14 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "rules" {
+		err := runRules(os.Args[2:], os.Stdout, os.Stderr)
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+
 	var (
 		configPath  string
 		showVersion bool
@@ -46,6 +54,13 @@ func run() error {
 	flag.StringVar(&configPath, "c", "", "path to the configuration file")
 	flag.StringVar(&configPath, "config", "", "path to the configuration file")
 	flag.BoolVar(&showVersion, "version", false, "print version and compiled backends, then exit")
+	flag.Usage = func() {
+		out := flag.CommandLine.Output()
+		fmt.Fprintln(out, "Usage: iceberg_exporter -c config.yaml")
+		fmt.Fprintln(out, "       iceberg_exporter rules [-format prometheus|prometheusrule] [flags]")
+		fmt.Fprintln(out)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	if showVersion {
