@@ -21,8 +21,6 @@ const (
 	DefaultConcurrency     = 4
 	DefaultManifestWorkers = 8
 	DefaultMaxPartitions   = 100_000
-	DefaultSmallFileBytes  = 64 << 20 // 64 MiB
-	DefaultTargetFileBytes = 512 << 20
 )
 
 // Config is the top-level exporter configuration.
@@ -50,17 +48,14 @@ type CatalogConfig struct {
 
 // ScrapeConfig controls discovery and metric collection.
 type ScrapeConfig struct {
-	Interval        Duration         `yaml:"interval"`
-	Timeout         Duration         `yaml:"timeout"`
-	Concurrency     int              `yaml:"concurrency"`
-	Catalogs        []string         `yaml:"catalogs"`
-	Namespaces      Filter           `yaml:"namespaces"`
-	Tables          Filter           `yaml:"tables"`
-	Manifests       ManifestsConfig  `yaml:"manifests"`
-	Partitions      PartitionsConfig `yaml:"partitions"`
-	SmallFileBytes  int64            `yaml:"small_file_bytes"`
-	LargeFileBytes  int64            `yaml:"large_file_bytes"`
-	TargetFileBytes int64            `yaml:"target_file_size_bytes"`
+	Interval    Duration         `yaml:"interval"`
+	Timeout     Duration         `yaml:"timeout"`
+	Concurrency int              `yaml:"concurrency"`
+	Catalogs    []string         `yaml:"catalogs"`
+	Namespaces  Filter           `yaml:"namespaces"`
+	Tables      Filter           `yaml:"tables"`
+	Manifests   ManifestsConfig  `yaml:"manifests"`
+	Partitions  PartitionsConfig `yaml:"partitions"`
 }
 
 // ManifestsConfig controls reading manifest entries.
@@ -272,9 +267,7 @@ func Load(path string) (*Config, error) {
 
 	var cfg = Config{
 		Scrape: ScrapeConfig{
-			Manifests:       ManifestsConfig{Enabled: true},
-			SmallFileBytes:  DefaultSmallFileBytes,
-			TargetFileBytes: DefaultTargetFileBytes,
+			Manifests: ManifestsConfig{Enabled: true},
 		},
 	}
 	if root.Kind != 0 { // an empty file leaves the zero node
@@ -362,15 +355,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Scrape.Partitions.MaxTracked <= 0 {
 		errs = append(errs, errors.New("scrape.partitions.max_tracked must be greater than zero"))
-	}
-	if c.Scrape.SmallFileBytes < 0 {
-		errs = append(errs, errors.New("scrape.small_file_bytes must not be negative"))
-	}
-	if c.Scrape.LargeFileBytes < 0 {
-		errs = append(errs, errors.New("scrape.large_file_bytes must not be negative"))
-	}
-	if c.Scrape.TargetFileBytes <= 0 {
-		errs = append(errs, errors.New("scrape.target_file_size_bytes must be greater than zero"))
 	}
 	if err := validateFilter("scrape.namespaces", c.Scrape.Namespaces); err != nil {
 		errs = append(errs, err)

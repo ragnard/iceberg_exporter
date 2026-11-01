@@ -25,9 +25,6 @@ type Options struct {
 	Manifests            bool
 	ManifestConcurrency  int
 	MaxTrackedPartitions int
-	SmallFileBytes       int64
-	LargeFileBytes       int64 // 0 means "2 * target file size"
-	TargetFileBytes      int64
 
 	// LoadLock, if set, is held only while the catalog loads the table.
 	// Use it for catalog clients that are not safe for concurrent use;
@@ -35,7 +32,7 @@ type Options struct {
 	LoadLock sync.Locker
 
 	// Previous is the table's last successfully collected stats, if any.
-	// When its current snapshot and thresholds match, its manifest-derived
+	// When its current snapshot and partition limit match, its manifest-derived
 	// stats are reused and no manifest list or manifest is read.
 	Previous *TableStats
 }
@@ -46,9 +43,6 @@ func (o Options) withDefaults() Options {
 	}
 	if o.MaxTrackedPartitions <= 0 {
 		o.MaxTrackedPartitions = 100_000
-	}
-	if o.TargetFileBytes <= 0 {
-		o.TargetFileBytes = 512 << 20
 	}
 	return o
 }
@@ -85,21 +79,7 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 	s.LastUpdatedMs = md.LastUpdatedMillis()
 	s.LastSequenceNumber = md.LastSequenceNumber()
 	s.SnapshotCount = len(md.Snapshots())
-	for range md.Refs() {
-		s.RefCount++
-	}
 	collectHealth(md, s)
-
-	s.TargetFileSizeBytes = opts.TargetFileBytes
-	if v, ok := md.Properties()["write.target-file-size-bytes"]; ok {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			s.TargetFileSizeBytes = n
-		}
-	}
-	largeFileBytes := opts.LargeFileBytes
-	if largeFileBytes <= 0 {
-		largeFileBytes = 2 * s.TargetFileSizeBytes
-	}
 
 	for _, snap := range md.Snapshots() {
 		if snap.TimestampMs <= 0 {
@@ -143,11 +123,9 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 	}
 
 	key := fileStatsKey{
-		tableUUID:      md.TableUUID().String(),
-		snapshotID:     snap.SnapshotID,
-		smallFileBytes: opts.SmallFileBytes,
-		largeFileBytes: largeFileBytes,
-		maxTracked:     opts.MaxTrackedPartitions,
+		tableUUID:  md.TableUUID().String(),
+		snapshotID: snap.SnapshotID,
+		maxTracked: opts.MaxTrackedPartitions,
 	}
 	if prev := opts.Previous; prev != nil && prev.FileStatsCollected && prev.fileStatsKey == key {
 		s.copyFileStats(prev)
@@ -170,8 +148,6 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 
 	specs := buildSpecIndex(md)
 	acc := newAccumulator(opts.MaxTrackedPartitions)
-	acc.smallFileBytes = opts.SmallFileBytes
-	acc.largeFileBytes = largeFileBytes
 	acc.unpartitioned = !s.Partitioned
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -312,8 +288,6 @@ type partitionStat struct {
 
 type accumulator struct {
 	mu                sync.Mutex
-	smallFileBytes    int64
-	largeFileBytes    int64
 	maxTracked        int
 	dataFiles         int64
 	dataBytes         int64
@@ -326,8 +300,6 @@ type accumulator struct {
 	eqDeleteRecords   int64
 	dvFiles           int64
 	dvRecords         int64
-	smallFiles        int64
-	largeFiles        int64
 	fileSizes         Histogram
 	partitions        map[string]partitionStat
 	trackingTruncated bool
@@ -345,8 +317,6 @@ func newAccumulator(maxTracked int) *accumulator {
 func (a *accumulator) addDataFile(df iceberg.DataFile, partitionKey string) {
 	size := df.FileSizeBytes()
 	records := df.Count()
-	small := a.smallFileBytes > 0 && size < a.smallFileBytes
-	large := a.largeFileBytes > 0 && size > a.largeFileBytes
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -354,12 +324,6 @@ func (a *accumulator) addDataFile(df iceberg.DataFile, partitionKey string) {
 	a.dataFiles++
 	a.dataBytes += size
 	a.dataRecords += records
-	if small {
-		a.smallFiles++
-	}
-	if large {
-		a.largeFiles++
-	}
 	a.fileSizes.Observe(float64(size))
 
 	p, ok := a.partitions[partitionKey]
@@ -409,8 +373,6 @@ func (a *accumulator) finalize(s *TableStats) {
 	s.EqualityDeleteRecords = a.eqDeleteRecords
 	s.DeletionVectors = a.dvFiles
 	s.DeletionVectorRecords = a.dvRecords
-	s.SmallFiles = a.smallFiles
-	s.LargeFiles = a.largeFiles
 	s.FileSizes = a.fileSizes
 	s.Partitions = int64(len(a.partitions))
 	if a.unpartitioned && len(a.partitions) == 0 {

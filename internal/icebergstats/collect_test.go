@@ -89,8 +89,6 @@ func TestAccumulator(t *testing.T) {
 	}
 
 	acc := newAccumulator(2)
-	acc.smallFileBytes = 150
-	acc.largeFileBytes = 250
 
 	acc.addDataFile(file(iceberg.EntryContentData, "a", 10, 100), `0|1000="a";`)
 	acc.addDataFile(file(iceberg.EntryContentData, "a", 20, 200), `0|1000="a";`)
@@ -104,12 +102,6 @@ func TestAccumulator(t *testing.T) {
 	}
 	if s.DeleteFiles != 1 || s.DeleteRecords != 2 {
 		t.Errorf("delete totals = %d/%d, want 1/2", s.DeleteFiles, s.DeleteRecords)
-	}
-	if s.SmallFiles != 1 {
-		t.Errorf("SmallFiles = %d, want 1", s.SmallFiles)
-	}
-	if s.LargeFiles != 1 {
-		t.Errorf("LargeFiles = %d, want 1", s.LargeFiles)
 	}
 	if s.Partitions != 2 {
 		t.Errorf("Partitions = %d, want 2", s.Partitions)
@@ -167,8 +159,6 @@ func TestCollectMetadataOnly(t *testing.T) {
 		Catalog:              "prod",
 		Manifests:            true,
 		MaxTrackedPartitions: 100,
-		SmallFileBytes:       64 << 20,
-		TargetFileBytes:      512 << 20,
 	})
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
@@ -185,8 +175,8 @@ func TestCollectMetadataOnly(t *testing.T) {
 	if s.Partitioned {
 		t.Error("Partitioned = true, want false")
 	}
-	if s.TargetFileSizeBytes != 1048576 {
-		t.Errorf("TargetFileSizeBytes = %d, want 1048576", s.TargetFileSizeBytes)
+	if s.Settings.TargetFileSizeBytes != 1048576 {
+		t.Errorf("TargetFileSizeBytes = %d, want 1048576", s.Settings.TargetFileSizeBytes)
 	}
 	if s.HasCurrentSnapshot {
 		t.Error("HasCurrentSnapshot = true, want false")
@@ -359,8 +349,6 @@ func TestCollectWithManifests(t *testing.T) {
 		Manifests:            true,
 		ManifestConcurrency:  2,
 		MaxTrackedPartitions: 100,
-		SmallFileBytes:       150,
-		LargeFileBytes:       250,
 		LoadLock:             &loadLock,
 	}
 	s, err := Collect(context.Background(), cat, table.Identifier{"db", "tbl"}, opts)
@@ -382,9 +370,6 @@ func TestCollectWithManifests(t *testing.T) {
 	if s.DeleteFiles != 1 || s.DeleteRecords != 2 {
 		t.Errorf("delete totals = %d/%d, want 1/2", s.DeleteFiles, s.DeleteRecords)
 	}
-	if s.SmallFiles != 1 || s.LargeFiles != 0 {
-		t.Errorf("small/large = %d/%d, want 1/0", s.SmallFiles, s.LargeFiles)
-	}
 	if s.Partitions != 1 {
 		t.Errorf("Partitions = %d, want 1", s.Partitions)
 	}
@@ -399,7 +384,7 @@ func TestCollectWithManifests(t *testing.T) {
 }
 
 // testFileStatsReuse checks that manifest-derived stats are reused only when
-// the snapshot, table UUID and thresholds are unchanged.
+// the snapshot, table UUID and partition limit are unchanged.
 func testFileStatsReuse(t *testing.T, cat catalog.Catalog, opts Options, first *TableStats, fsOpens *int) {
 	t.Helper()
 	ident := table.Identifier{"db", "tbl"}
@@ -445,12 +430,6 @@ func testFileStatsReuse(t *testing.T, cat catalog.Catalog, opts Options, first *
 	}
 	recollects("different snapshot", changed(func(k *fileStatsKey) { k.snapshotID++ }), opts)
 	recollects("recreated table", changed(func(k *fileStatsKey) { k.tableUUID = "other" }), opts)
-	smaller := opts
-	smaller.SmallFileBytes++
-	recollects("changed small-file threshold", first, smaller)
-	larger := opts
-	larger.LargeFileBytes++
-	recollects("changed large-file threshold", first, larger)
 	tracked := opts
 	tracked.MaxTrackedPartitions++
 	recollects("changed max tracked partitions", first, tracked)

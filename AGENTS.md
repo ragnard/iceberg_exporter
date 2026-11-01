@@ -39,7 +39,7 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 - `internal/scrape`: discovery, refresh scheduling, table state. `Refresh` is serialized by `refreshMu`; `State` is immutable after `atomic.Pointer.Store`.
 - Catalog clients live for one refresh only: `Refresh` calls `Catalogs.open` and closes every client when it returns. Do not cache clients across refreshes (the Hive Thrift client has no reconnect logic, so a dropped connection would stick). `NewCatalogs` at startup validates without connecting; a catalog load failure is a per-refresh discovery error.
 - `internal/icebergstats`: metadata + manifest scanning into plain values. `Collect` reads only the current snapshot and uses `Entries(fs, true)` so deleted entries are excluded.
-- Manifest-scan reuse: `Collect` takes `Options.Previous` and skips the manifest list and manifests when `fileStatsKey` (table UUID, snapshot ID, small/large thresholds, `max_tracked`) matches. Any new input that affects manifest-derived stats must go into `fileStatsKey`, and any new manifest-derived field into `copyFileStats`.
+- Manifest-scan reuse: `Collect` takes `Options.Previous` and skips the manifest list and manifests when `fileStatsKey` (table UUID, snapshot ID, `max_tracked`) matches. Any new input that affects manifest-derived stats must go into `fileStatsKey`, and any new manifest-derived field into `copyFileStats`.
 - `internal/metrics`: renders `scrape.State` on each Prometheus scrape. Do not call catalogs/object stores from `Collect`; `/metrics` must stay cache-only.
 - Hive catalog table loads are serialized via `Scraper.loadLock` → `icebergstats.Options.LoadLock` because its Thrift client is not concurrency-safe. The lock covers only `LoadTable`; manifest reads must stay outside it. Keep that path if changing table workers.
 - Table/manifest reads are concurrent; totals are guarded by a mutex in `accumulator`. Partition state is bounded by `scrape.partitions.max_tracked` (totals stay exact; distributions truncate).
@@ -53,6 +53,8 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 - Keep Prometheus units `_seconds`; metric names/descriptors live only in `internal/metrics/metrics.go`.
 - Table health checks live in `internal/rules/iceberg_exporter.rules.yml` (embedded via `go:embed`, printed by `iceberg_exporter rules`) as recording rules into `iceberg_table_problem{problem,severity}`; the exporter only exports facts and allowlisted effective table settings (named `iceberg_table_setting_*`), never judgments. That file is the only source: the PrometheusRule (`rules -format prometheusrule`) is derived from it at runtime, so never add a second copy. `TestRulesReferenceKnownMetrics` fails if rules reference a missing metric; run `make rules-check` (promtool in docker) after changing rules or metric names, and add a promtool test case per new problem.
 - Histograms use cumulative buckets from `icebergstats.Histogram`; do not hand-build `le` values.
+- Small/large-file counts are derived from `file_size_bytes` buckets in PromQL, not exported or configured. Rules match `le` as client_golang renders it (`le="6.7108864e+07"`); `TestRulesFileSizeBucketsExist` fails if a rule names a bound not in `FileSizeBounds`.
+- Export timestamps, not ages: rules and queries use `time() - *_timestamp_seconds`.
 - Summary bytes are all file bytes (including delete files); `data_records` is records in live data files before deletes are applied.
 
 ## Gotchas

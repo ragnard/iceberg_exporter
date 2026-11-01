@@ -247,19 +247,17 @@ catalogs:
 	}
 }
 
-func TestExplicitZeroSmallFileBytesDisablesMetric(t *testing.T) {
-	path := writeConfig(t, `
+func TestRemovedFileSizeKeysAreRejected(t *testing.T) {
+	for _, key := range []string{"small_file_bytes", "large_file_bytes", "target_file_size_bytes"} {
+		path := writeConfig(t, `
 catalogs:
   prod: {type: rest, uri: https://example.com}
 scrape:
-  small_file_bytes: 0
+  `+key+`: 1
 `)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Scrape.SmallFileBytes != 0 {
-		t.Errorf("small_file_bytes = %d, want 0", cfg.Scrape.SmallFileBytes)
+		if _, err := Load(path); err == nil {
+			t.Errorf("%s: Load succeeded, want unknown-key error", key)
+		}
 	}
 }
 

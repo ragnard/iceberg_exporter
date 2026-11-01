@@ -117,6 +117,7 @@ func TestCollectHealth(t *testing.T) {
 		MetadataDeleteAfterCommit:   true,
 		GCEnabled:                   false,
 		ManifestMergeEnabled:        DefaultManifestMergeEnabled,
+		TargetFileSizeBytes:         DefaultTargetFileSizeBytes,
 	}
 	if s.Settings != want {
 		t.Errorf("Settings = %+v, want %+v", s.Settings, want)
@@ -138,6 +139,7 @@ func TestTableSettingsDefaults(t *testing.T) {
 		MetadataDeleteAfterCommit:   DefaultMetadataDeleteAfterCommit,
 		GCEnabled:                   DefaultGCEnabled,
 		ManifestMergeEnabled:        DefaultManifestMergeEnabled,
+		TargetFileSizeBytes:         DefaultTargetFileSizeBytes,
 	}
 	if got := tableSettings(md); got != want {
 		t.Errorf("tableSettings() = %+v, want %+v", got, want)

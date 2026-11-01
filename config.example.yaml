@@ -44,7 +44,3 @@ scrape:
     # this is exceeded; partition distributions become approximate and
     # iceberg_table_partition_tracking_truncated becomes 1.
     max_tracked: 100000
-
-  small_file_bytes: 67108864        # 64 MiB; 0 disables the small-file metric
-  large_file_bytes: 0               # 0 = 2 x effective target file size
-  target_file_size_bytes: 536870912 # fallback: 512 MiB
