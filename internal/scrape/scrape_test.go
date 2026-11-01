@@ -248,6 +248,31 @@ func TestTableKeyIsCollisionFree(t *testing.T) {
 	}
 }
 
+func TestCollidingLabelsSortDeterministically(t *testing.T) {
+	// ["a.b"].t and ["a","b"].t both render as namespace="a.b", table="t".
+	// The collector exports the first of the two, so their order must not
+	// depend on map iteration.
+	both := []table.Identifier{{"a.b", "t"}, {"a", "b", "t"}}
+	fc := &fakeCatalog{
+		namespaces: []table.Identifier{{"a.b"}, {"a"}},
+		children:   map[string][]table.Identifier{"a": {{"a", "b"}}},
+		tables:     map[string][]table.Identifier{"a.b": both},
+		tbl:        testTable(t),
+	}
+	s := newTestScraper(t, testConfig(), fc)
+	want := table.Identifier{"a", "b", "t"} // smallest collision-free key
+	for range 50 {
+		s.Refresh(context.Background())
+		tables := s.State().Tables
+		if len(tables) != 2 {
+			t.Fatalf("len(Tables) = %d, want 2", len(tables))
+		}
+		if got := tables[0].Ref.Identifier; !slices.Equal(got, want) {
+			t.Fatalf("first colliding table = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestDiscoveryFailureRetainsTables(t *testing.T) {
 	fc := &fakeCatalog{
 		namespaces: []table.Identifier{{"ns"}},

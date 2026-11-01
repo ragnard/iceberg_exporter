@@ -1,12 +1,12 @@
 package scrape
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +51,19 @@ func identifierKey(ident table.Identifier) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// compareRefs orders refs by their exported labels (catalog, dotted
+// namespace, table), breaking ties with the collision-free identifier key.
+// Refs whose labels collide therefore always sort the same way, so the
+// collector consistently exports the same one of them.
+func compareRefs(a, b TableRef) int {
+	return cmp.Or(
+		cmp.Compare(a.Catalog, b.Catalog),
+		cmp.Compare(a.Namespace, b.Namespace),
+		cmp.Compare(a.Table, b.Table),
+		cmp.Compare(identifierKey(a.Identifier), identifierKey(b.Identifier)),
+	)
 }
 
 // FullName is the dotted namespace and table name.
@@ -217,16 +230,7 @@ func (s *Scraper) Refresh(ctx context.Context) {
 			failing++
 		}
 	}
-	sort.Slice(tables, func(i, j int) bool {
-		a, b := tables[i], tables[j]
-		if a.Ref.Catalog != b.Ref.Catalog {
-			return a.Ref.Catalog < b.Ref.Catalog
-		}
-		if a.Ref.Namespace != b.Ref.Namespace {
-			return a.Ref.Namespace < b.Ref.Namespace
-		}
-		return a.Ref.Table < b.Ref.Table
-	})
+	slices.SortFunc(tables, func(a, b TableResult) int { return compareRefs(a.Ref, b.Ref) })
 	s.results = results
 
 	st := &State{
@@ -315,16 +319,7 @@ func (s *Scraper) discover(ctx context.Context) ([]TableRef, []error) {
 	for _, ref := range refByKey {
 		out = append(out, ref)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Catalog != b.Catalog {
-			return a.Catalog < b.Catalog
-		}
-		if a.Namespace != b.Namespace {
-			return a.Namespace < b.Namespace
-		}
-		return a.Table < b.Table
-	})
+	slices.SortFunc(out, compareRefs)
 	return out, errs
 }
 
