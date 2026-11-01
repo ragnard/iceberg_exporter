@@ -176,7 +176,12 @@ func (s *Scraper) Refresh(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, s.cfg.Scrape.Timeout.Duration())
 	defer cancel()
 
-	refs, discoveryErrs := s.discover(runCtx)
+	// Fresh catalog clients for every refresh, closed once all table workers
+	// are done (g.Wait below returns before the deferred close runs).
+	cats := s.catalogs.open(runCtx)
+	defer cats.close(s.log)
+
+	refs, discoveryErrs := s.discover(runCtx, cats)
 
 	results := make(map[TableKey]TableResult, len(refs))
 	var mu sync.Mutex
@@ -184,12 +189,15 @@ func (s *Scraper) Refresh(ctx context.Context) {
 	g, gctx := errgroup.WithContext(runCtx)
 	g.SetLimit(s.cfg.Scrape.Concurrency)
 	for _, ref := range refs {
-		ref := ref
 		g.Go(func() error {
-			cat := s.catalogFor(ref.Catalog)
-			opts := s.optionsFor(ref.Catalog)
-			opts.LoadLock = s.loadLock(ref.Catalog, cat)
-			stats, err := icebergstats.Collect(gctx, cat, ref.Identifier, opts)
+			cat, catErr := cats.get(ref.Catalog)
+			var stats *icebergstats.TableStats
+			err := catErr
+			if catErr == nil {
+				opts := s.optionsFor(ref.Catalog)
+				opts.LoadLock = s.loadLock(ref.Catalog, cat)
+				stats, err = icebergstats.Collect(gctx, cat, ref.Identifier, opts)
+			}
 			now := time.Now()
 
 			mu.Lock()
@@ -209,7 +217,11 @@ func (s *Scraper) Refresh(ctx context.Context) {
 			mu.Unlock()
 
 			if err != nil && runCtx.Err() == nil {
-				s.log.Warn("table scrape failed", "catalog", ref.Catalog, "table", ref.FullName(), "error", err)
+				// A catalog that failed to load is logged once as a
+				// discovery error rather than once per retained table.
+				if catErr == nil {
+					s.log.Warn("table scrape failed", "catalog", ref.Catalog, "table", ref.FullName(), "error", err)
+				}
 				if s.onTableError != nil {
 					s.onTableError(ref.Catalog)
 				}
@@ -263,11 +275,6 @@ func (s *Scraper) Refresh(ctx context.Context) {
 	}
 }
 
-func (s *Scraper) catalogFor(name string) catalog.Catalog {
-	cat, _ := s.catalogs.Get(name)
-	return cat
-}
-
 // loadLock returns the lock that serializes table loads for catalogs whose
 // clients are not safe for concurrent use, or nil. The Hive metastore client
 // shares a single Thrift transport and is not goroutine-safe. Only the
@@ -294,12 +301,16 @@ func (s *Scraper) optionsFor(catalogName string) icebergstats.Options {
 	}
 }
 
-func (s *Scraper) discover(ctx context.Context) ([]TableRef, []error) {
+func (s *Scraper) discover(ctx context.Context, cats *openCatalogs) ([]TableRef, []error) {
 	refByKey := make(map[TableKey]TableRef)
 	var errs []error
 
 	for _, name := range s.catalogs.Names() {
-		refs, err := s.discoverCatalog(ctx, name, s.catalogFor(name))
+		var refs []TableRef
+		cat, err := cats.get(name)
+		if err == nil {
+			refs, err = s.discoverCatalog(ctx, name, cat)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("catalog %q: %w", name, err))
 			// Keep previously known tables so a transient discovery failure

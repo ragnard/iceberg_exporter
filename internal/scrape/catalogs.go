@@ -2,8 +2,8 @@ package scrape
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/apache/iceberg-go"
@@ -13,17 +13,21 @@ import (
 	"github.com/ragnard/iceberg_exporter/internal/registry"
 )
 
-// Catalogs holds the configured catalogs by name.
+// Catalogs describes the configured catalogs. It does not hold catalog
+// clients: every refresh opens fresh clients and closes them when it is done,
+// so a broken connection (for example a dropped Hive Thrift transport) never
+// outlives a single refresh.
 type Catalogs struct {
-	byName  map[string]catalog.Catalog
-	order   []string
-	closers []catalog.Closer
+	order []string
+	props map[string]iceberg.Properties
+	load  func(ctx context.Context, name string, props iceberg.Properties) (catalog.Catalog, error)
 }
 
-// LoadCatalogs constructs every selected catalog from the configuration. It
-// calls catalog.Load eagerly so configuration errors and missing build tags
-// surface at startup rather than on the first scrape.
-func LoadCatalogs(ctx context.Context, cfg *config.Config) (*Catalogs, error) {
+// NewCatalogs validates the selected catalogs without connecting to them.
+// Missing build tags and unknown catalog names fail here, at startup; whether
+// a catalog is reachable is only known per refresh and is reported through
+// metrics.
+func NewCatalogs(cfg *config.Config) (*Catalogs, error) {
 	names := cfg.Scrape.Catalogs
 	if len(names) == 0 {
 		names = make([]string, 0, len(cfg.Catalogs))
@@ -31,24 +35,22 @@ func LoadCatalogs(ctx context.Context, cfg *config.Config) (*Catalogs, error) {
 			names = append(names, name)
 		}
 	}
+	names = append([]string(nil), names...)
 	sort.Strings(names)
 
-	out := &Catalogs{byName: make(map[string]catalog.Catalog, len(names))}
-	seen := make(map[string]bool, len(names))
+	out := &Catalogs{
+		props: make(map[string]iceberg.Properties, len(names)),
+		load:  catalog.Load,
+	}
 	for _, name := range names {
-		if seen[name] {
+		if _, seen := out.props[name]; seen {
 			continue
 		}
-		seen[name] = true
-		out.order = append(out.order, name)
-
 		catCfg, ok := cfg.Catalogs[name]
 		if !ok {
-			_ = out.Close()
 			return nil, fmt.Errorf("scrape.catalogs references unknown catalog %q", name)
 		}
 		if catCfg.Type != "" && !registry.HasCatalogType(catCfg.Type) {
-			_ = out.Close()
 			return nil, fmt.Errorf("catalog %q: %w", name, registry.CatalogHint(catCfg.Type))
 		}
 		props := iceberg.Properties{}
@@ -67,36 +69,60 @@ func LoadCatalogs(ctx context.Context, cfg *config.Config) (*Catalogs, error) {
 		for k, v := range catCfg.Properties {
 			props[k] = v
 		}
-
-		cat, err := catalog.Load(ctx, name, props)
-		if err != nil {
-			_ = out.Close()
-			return nil, fmt.Errorf("catalog %q: %w", name, err)
-		}
-		out.byName[name] = cat
-		if closer, ok := cat.(catalog.Closer); ok {
-			out.closers = append(out.closers, closer)
-		}
+		out.order = append(out.order, name)
+		out.props[name] = props
 	}
 	return out, nil
-}
-
-// Get returns a catalog by name.
-func (c *Catalogs) Get(name string) (catalog.Catalog, bool) {
-	cat, ok := c.byName[name]
-	return cat, ok
 }
 
 // Names returns the configured catalog names in sorted order.
 func (c *Catalogs) Names() []string { return append([]string(nil), c.order...) }
 
-// Close releases catalog resources.
-func (c *Catalogs) Close() error {
-	var errs []error
-	for i := len(c.closers) - 1; i >= 0; i-- {
-		if err := c.closers[i].Close(); err != nil {
-			errs = append(errs, err)
+// openCatalogs is the set of catalog clients used by one refresh.
+type openCatalogs struct {
+	byName map[string]catalog.Catalog
+	errs   map[string]error
+}
+
+// open creates a fresh client for every catalog. A catalog that fails to
+// load is recorded in errs; the others are still usable.
+func (c *Catalogs) open(ctx context.Context) *openCatalogs {
+	o := &openCatalogs{
+		byName: make(map[string]catalog.Catalog, len(c.order)),
+		errs:   make(map[string]error),
+	}
+	for _, name := range c.order {
+		cat, err := c.load(ctx, name, c.props[name])
+		if err != nil {
+			o.errs[name] = fmt.Errorf("load catalog: %w", err)
+			continue
+		}
+		o.byName[name] = cat
+	}
+	return o
+}
+
+// get returns the catalog client, or the error that prevented loading it.
+func (o *openCatalogs) get(name string) (catalog.Catalog, error) {
+	if err, ok := o.errs[name]; ok {
+		return nil, err
+	}
+	cat, ok := o.byName[name]
+	if !ok {
+		return nil, fmt.Errorf("catalog %q is not configured", name)
+	}
+	return cat, nil
+}
+
+// close releases every client opened for the refresh.
+func (o *openCatalogs) close(log *slog.Logger) {
+	for name, cat := range o.byName {
+		closer, ok := cat.(catalog.Closer)
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil {
+			log.Warn("closing catalog", "catalog", name, "error", err)
 		}
 	}
-	return errors.Join(errs...)
 }
