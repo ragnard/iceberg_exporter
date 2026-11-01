@@ -81,9 +81,7 @@ func TestCollectorRendersTableStats(t *testing.T) {
 					SnapshotCount:              4,
 					HasSnapshots:               true,
 					OldestSnapshotTimestampMs:  now.Add(-24 * time.Hour).UnixMilli(),
-					RefCount:                   2,
 					LastSequenceNumber:         9,
-					TargetFileSizeBytes:        512 << 20,
 					HasLastSnapshotSummary:     true,
 					LastSnapshot: icebergstats.SnapshotSummary{
 						FilesAdded: 2, FilesRemoved: 1, BytesAdded: 400, BytesRemoved: 100,
@@ -96,8 +94,6 @@ func TestCollectorRendersTableStats(t *testing.T) {
 					DataRecords:        60,
 					DeleteFiles:        1,
 					DeleteRecords:      2,
-					SmallFiles:         1,
-					LargeFiles:         1,
 					FileSizes:          fileSizes,
 					Partitions:         2,
 					PartitionFiles:     partitionFiles,

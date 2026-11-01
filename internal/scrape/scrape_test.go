@@ -110,15 +110,13 @@ func joinIdent(ident table.Identifier) string {
 func testConfig() *config.Config {
 	return &config.Config{
 		Scrape: config.ScrapeConfig{
-			Interval:        config.Duration(time.Hour),
-			Timeout:         config.Duration(time.Minute),
-			Concurrency:     2,
-			Namespaces:      config.Filter{Include: []string{"**"}},
-			Tables:          config.Filter{Include: []string{"**"}},
-			Manifests:       config.ManifestsConfig{Enabled: true, Concurrency: 2},
-			Partitions:      config.PartitionsConfig{MaxTracked: 100},
-			SmallFileBytes:  1 << 20,
-			TargetFileBytes: 1 << 20,
+			Interval:    config.Duration(time.Hour),
+			Timeout:     config.Duration(time.Minute),
+			Concurrency: 2,
+			Namespaces:  config.Filter{Include: []string{"**"}},
+			Tables:      config.Filter{Include: []string{"**"}},
+			Manifests:   config.ManifestsConfig{Enabled: true, Concurrency: 2},
+			Partitions:  config.PartitionsConfig{MaxTracked: 100},
 		},
 	}
 }

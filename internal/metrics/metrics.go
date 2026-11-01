@@ -3,7 +3,6 @@ package metrics
 
 import (
 	"strings"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -33,19 +32,14 @@ type Collector struct {
 	tableErrors *prometheus.CounterVec
 	descs       []*prometheus.Desc
 
-	info                    *prometheus.Desc
 	formatVersion           *prometheus.Desc
 	partitioned             *prometheus.Desc
 	schemaCount             *prometheus.Desc
 	partitionSpecCount      *prometheus.Desc
 	currentSnapshotTime     *prometheus.Desc
-	currentSnapshotAge      *prometheus.Desc
 	lastUpdatedTime         *prometheus.Desc
-	lastUpdatedAge          *prometheus.Desc
 	snapshotCount           *prometheus.Desc
 	oldestSnapshotTime      *prometheus.Desc
-	oldestSnapshotAge       *prometheus.Desc
-	refCount                *prometheus.Desc
 	lastSequenceNumber      *prometheus.Desc
 	targetFileSizeBytes     *prometheus.Desc
 	filesAdded              *prometheus.Desc
@@ -60,8 +54,6 @@ type Collector struct {
 	dataRecords             *prometheus.Desc
 	deleteFiles             *prometheus.Desc
 	deleteRecords           *prometheus.Desc
-	smallFiles              *prometheus.Desc
-	largeFiles              *prometheus.Desc
 	fileSizes               *prometheus.Desc
 	partitions              *prometheus.Desc
 	partitionFiles          *prometheus.Desc
@@ -75,7 +67,7 @@ type Collector struct {
 	duplicateTableLabels    *prometheus.Desc
 
 	refs                       *prometheus.Desc
-	oldestRefSnapshotAge       *prometheus.Desc
+	oldestRefSnapshotTime      *prometheus.Desc
 	metadataLogEntries         *prometheus.Desc
 	lastOperationTime          *prometheus.Desc
 	statisticsFiles            *prometheus.Desc
@@ -107,19 +99,14 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 			Help: "Total number of failed table collections, by catalog.",
 		}, []string{"catalog"}),
 
-		info:                       d("info", "Always 1; identifies a table that is being collected."),
 		formatVersion:              d("format_version", "Iceberg table format version."),
 		partitioned:                d("partitioned", "1 if the table's current partition spec has fields, 0 otherwise."),
 		schemaCount:                d("schema_count", "Number of schemas in the table metadata."),
 		partitionSpecCount:         d("partition_spec_count", "Number of partition specs in the table metadata."),
 		currentSnapshotTime:        d("current_snapshot_timestamp_seconds", "Timestamp of the current snapshot."),
-		currentSnapshotAge:         d("current_snapshot_age_seconds", "Age of the current snapshot."),
 		lastUpdatedTime:            d("last_updated_timestamp_seconds", "Time the table metadata was last updated."),
-		lastUpdatedAge:             d("last_updated_age_seconds", "Age of the last table metadata update."),
 		snapshotCount:              d("snapshot_count", "Number of snapshots retained in the table metadata."),
 		oldestSnapshotTime:         d("oldest_snapshot_timestamp_seconds", "Timestamp of the oldest retained snapshot."),
-		oldestSnapshotAge:          d("oldest_snapshot_age_seconds", "Age of the oldest retained snapshot."),
-		refCount:                   d("ref_count", "Number of snapshot references (branches and tags)."),
 		lastSequenceNumber:         d("last_sequence_number", "Last sequence number in the table metadata."),
 		targetFileSizeBytes:        d("setting_target_file_size_bytes", "Effective target data file size, from table properties or defaults."),
 		filesAdded:                 d("last_snapshot_files_added", "Data files added by the current snapshot."),
@@ -134,8 +121,6 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 		dataRecords:                d("data_records", "Records in live data files in the current snapshot, before delete files are applied."),
 		deleteFiles:                d("delete_files", "Number of live delete files in the current snapshot."),
 		deleteRecords:              d("delete_records", "Total records in live delete files in the current snapshot."),
-		smallFiles:                 d("small_files", "Data files smaller than the configured small-file threshold."),
-		largeFiles:                 d("large_files", "Data files larger than the configured large-file threshold."),
 		fileSizes:                  d("file_size_bytes", "Distribution of live data file sizes."),
 		partitions:                 d("partitions", "Number of distinct live partitions; 1 for unpartitioned tables."),
 		partitionFiles:             d("partition_files", "Distribution of live data files per partition."),
@@ -147,7 +132,7 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 		tableScrapeSuccess:         d("scrape_success", "1 if the table was collected successfully in the latest refresh, 0 otherwise."),
 		tableLastSuccess:           d("last_successful_scrape_timestamp_seconds", "Time the table was last collected successfully."),
 		refs:                       dl("refs", "Number of snapshot references, by type (branch or tag). Branches include main.", "type"),
-		oldestRefSnapshotAge:       dl("oldest_ref_snapshot_age_seconds", "Age of the snapshot referenced by the oldest non-main branch or tag, by type.", "type"),
+		oldestRefSnapshotTime:      dl("oldest_ref_snapshot_timestamp_seconds", "Timestamp of the snapshot referenced by the oldest non-main branch or tag, by type.", "type"),
 		metadataLogEntries:         d("metadata_log_entries", "Number of previous metadata files tracked in the metadata log."),
 		lastOperationTime:          dl("last_operation_timestamp_seconds", "Timestamp of the newest retained snapshot for each snapshot operation; replace is typically compaction.", "operation"),
 		statisticsFiles:            d("statistics_files", "Number of table statistics (Puffin) files registered in the table metadata."),
@@ -169,20 +154,20 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 	}
 
 	c.descs = []*prometheus.Desc{
-		c.info, c.formatVersion, c.partitioned, c.schemaCount, c.partitionSpecCount,
-		c.currentSnapshotTime, c.currentSnapshotAge,
-		c.lastUpdatedTime, c.lastUpdatedAge, c.snapshotCount,
-		c.oldestSnapshotTime, c.oldestSnapshotAge, c.refCount,
+		c.formatVersion, c.partitioned, c.schemaCount, c.partitionSpecCount,
+		c.currentSnapshotTime,
+		c.lastUpdatedTime, c.snapshotCount,
+		c.oldestSnapshotTime,
 		c.lastSequenceNumber, c.targetFileSizeBytes,
 		c.filesAdded, c.filesRemoved, c.bytesAdded, c.bytesRemoved,
 		c.recordsAdded, c.recordsRemoved,
 		c.manifests, c.dataFiles, c.dataBytes, c.dataRecords,
-		c.deleteFiles, c.deleteRecords, c.smallFiles, c.largeFiles,
+		c.deleteFiles, c.deleteRecords,
 		c.fileSizes, c.partitions, c.partitionFiles, c.partitionBytes,
 		c.partitionRecords, c.partitionFilesMax, c.partitionBytesMax,
 		c.partitionTrackingFailed, c.tableScrapeSuccess, c.tableLastSuccess,
 		c.duplicateTableLabels,
-		c.refs, c.oldestRefSnapshotAge, c.metadataLogEntries, c.lastOperationTime,
+		c.refs, c.oldestRefSnapshotTime, c.metadataLogEntries, c.lastOperationTime,
 		c.statisticsFiles, c.partitionStatisticsFiles, c.currentSnapshotHasStats,
 		c.snapshotMaxAge, c.minSnapshotsToKeep, c.metadataPreviousVersionMax,
 		c.metadataDeleteAfterCommit, c.gcEnabled, c.manifestMergeEnabled,
@@ -266,7 +251,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	now := time.Now()
 	gauge := func(desc *prometheus.Desc, v float64) {
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v)
 	}
@@ -300,25 +284,20 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		if s == nil {
 			continue
 		}
-		tableGauge(c.info, 1)
 		tableGauge(c.formatVersion, float64(s.FormatVersion))
 		tableGauge(c.partitioned, boolFloat(s.Partitioned))
 		tableGauge(c.schemaCount, float64(s.SchemaCount))
 		tableGauge(c.partitionSpecCount, float64(s.PartitionSpecCount))
 		if s.HasCurrentSnapshot {
 			tableGauge(c.currentSnapshotTime, msToSeconds(s.CurrentSnapshotTimestampMs))
-			tableGauge(c.currentSnapshotAge, ageSeconds(now, s.CurrentSnapshotTimestampMs))
 		}
 		tableGauge(c.lastUpdatedTime, msToSeconds(s.LastUpdatedMs))
-		tableGauge(c.lastUpdatedAge, ageSeconds(now, s.LastUpdatedMs))
 		tableGauge(c.snapshotCount, float64(s.SnapshotCount))
 		if s.HasSnapshots {
 			tableGauge(c.oldestSnapshotTime, msToSeconds(s.OldestSnapshotTimestampMs))
-			tableGauge(c.oldestSnapshotAge, ageSeconds(now, s.OldestSnapshotTimestampMs))
 		}
-		tableGauge(c.refCount, float64(s.RefCount))
 		tableGauge(c.lastSequenceNumber, float64(s.LastSequenceNumber))
-		tableGauge(c.targetFileSizeBytes, float64(s.TargetFileSizeBytes))
+		tableGauge(c.targetFileSizeBytes, float64(s.Settings.TargetFileSizeBytes))
 
 		labelGauge := func(desc *prometheus.Desc, v float64, extra string) {
 			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, append(append([]string{}, labels...), extra)...)
@@ -326,10 +305,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		labelGauge(c.refs, float64(s.Branches), "branch")
 		labelGauge(c.refs, float64(s.Tags), "tag")
 		if s.HasOldestBranch {
-			labelGauge(c.oldestRefSnapshotAge, ageSeconds(now, s.OldestBranchSnapshotMs), "branch")
+			labelGauge(c.oldestRefSnapshotTime, msToSeconds(s.OldestBranchSnapshotMs), "branch")
 		}
 		if s.HasOldestTag {
-			labelGauge(c.oldestRefSnapshotAge, ageSeconds(now, s.OldestTagSnapshotMs), "tag")
+			labelGauge(c.oldestRefSnapshotTime, msToSeconds(s.OldestTagSnapshotMs), "tag")
 		}
 		tableGauge(c.metadataLogEntries, float64(s.MetadataLogEntries))
 		for _, op := range icebergstats.SnapshotOperations {
@@ -371,8 +350,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		labelGauge(c.deleteRecordsByType, float64(s.PositionDeleteRecords), "position")
 		labelGauge(c.deleteRecordsByType, float64(s.EqualityDeleteRecords), "equality")
 		labelGauge(c.deleteRecordsByType, float64(s.DeletionVectorRecords), "deletion_vector")
-		tableGauge(c.smallFiles, float64(s.SmallFiles))
-		tableGauge(c.largeFiles, float64(s.LargeFiles))
 		ch <- prometheus.MustNewConstHistogram(c.fileSizes, s.FileSizes.Count, s.FileSizes.Sum, s.FileSizes.PromBuckets(), labels...)
 		tableGauge(c.partitions, float64(s.Partitions))
 		ch <- prometheus.MustNewConstHistogram(c.partitionFiles, s.PartitionFiles.Count, s.PartitionFiles.Sum, s.PartitionFiles.PromBuckets(), labels...)
@@ -387,17 +364,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 func msToSeconds(ms int64) float64 { return float64(ms) / 1000 }
-
-func ageSeconds(now time.Time, ms int64) float64 {
-	if ms <= 0 {
-		return 0
-	}
-	age := now.Sub(time.UnixMilli(ms)).Seconds()
-	if age < 0 {
-		return 0
-	}
-	return age
-}
 
 func boolFloat(v bool) float64 {
 	if v {

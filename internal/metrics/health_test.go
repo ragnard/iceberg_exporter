@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 				Branches:                     2,
 				Tags:                         1,
 				HasOldestBranch:              true,
-				OldestBranchSnapshotMs:       now.Add(-time.Hour).UnixMilli(),
+				OldestBranchSnapshotMs:       7000,
 				MetadataLogEntries:           7,
 				LastOperationMs:              map[string]int64{"replace": 5000},
 				StatisticsFiles:              2,
@@ -56,6 +57,7 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 					MetadataDeleteAfterCommit:   true,
 					GCEnabled:                   false,
 					ManifestMergeEnabled:        true,
+					TargetFileSizeBytes:         1 << 20,
 				},
 				FileStatsCollected:    true,
 				PositionDeleteFiles:   4,
@@ -82,6 +84,7 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 		"iceberg_table_setting_metadata_delete_after_commit_enabled": 1,
 		"iceberg_table_setting_gc_enabled":                           0,
 		"iceberg_table_setting_manifest_merge_enabled":               1,
+		"iceberg_table_setting_target_file_size_bytes":               1 << 20,
 	} {
 		if got := gaugeValue(t, mfs, name); got != want {
 			t.Errorf("%s = %v, want %v", name, got, want)
@@ -95,6 +98,7 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 		{"iceberg_table_refs", "type", "branch", 2},
 		{"iceberg_table_refs", "type", "tag", 1},
 		{"iceberg_table_last_operation_timestamp_seconds", "operation", "replace", 5},
+		{"iceberg_table_oldest_ref_snapshot_timestamp_seconds", "type", "branch", 7},
 		{"iceberg_table_delete_files_by_type", "type", "position", 4},
 		{"iceberg_table_delete_files_by_type", "type", "equality", 5},
 		{"iceberg_table_delete_files_by_type", "type", "deletion_vector", 6},
@@ -106,11 +110,8 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 		}
 	}
 
-	if age, ok := labeledValue(t, mfs, "iceberg_table_oldest_ref_snapshot_age_seconds", "type", "branch"); !ok || age < 3500 || age > 3700 {
-		t.Errorf("oldest branch ref age = %v (present %v), want ~3600", age, ok)
-	}
-	if _, ok := labeledValue(t, mfs, "iceberg_table_oldest_ref_snapshot_age_seconds", "type", "tag"); ok {
-		t.Error("oldest tag ref age rendered without a non-main tag")
+	if _, ok := labeledValue(t, mfs, "iceberg_table_oldest_ref_snapshot_timestamp_seconds", "type", "tag"); ok {
+		t.Error("oldest tag ref timestamp rendered without a non-main tag")
 	}
 	if _, ok := labeledValue(t, mfs, "iceberg_table_last_operation_timestamp_seconds", "operation", "append"); ok {
 		t.Error("last append timestamp rendered without an append snapshot")
@@ -142,11 +143,35 @@ func TestRulesReferenceKnownMetrics(t *testing.T) {
 			continue
 		}
 		seen[name] = true
-		if !known[name] {
+		base := histogramSuffix.ReplaceAllString(name, "")
+		if !known[name] && !known[base] {
 			t.Errorf("rules reference unknown metric %q", name)
 		}
 	}
 	if len(seen) == 0 {
 		t.Fatal("no metric references found in rules file")
+	}
+}
+
+var histogramSuffix = regexp.MustCompile(`_(?:bucket|sum|count)$`)
+
+// TestRulesFileSizeBucketsExist checks that every le matcher on
+// iceberg_table_file_size_bytes_bucket in the rules names a bucket bound the
+// exporter renders, spelled the way the text exposition formats it.
+func TestRulesFileSizeBucketsExist(t *testing.T) {
+	rendered := map[string]bool{}
+	for _, b := range icebergstats.FileSizeBounds {
+		// client_golang's text exposition formats bucket bounds like this.
+		rendered[strconv.FormatFloat(b, 'g', -1, 64)] = true
+	}
+	le := regexp.MustCompile(`iceberg_table_file_size_bytes_bucket\{[^}]*le="([^"]+)"`)
+	matches := le.FindAllStringSubmatch(string(rules.Prometheus), -1)
+	if len(matches) == 0 {
+		t.Fatal("no file_size_bytes bucket matchers found in rules file")
+	}
+	for _, m := range matches {
+		if !rendered[m[1]] {
+			t.Errorf("rules match le=%q, which is not a rendered file_size_bytes bucket bound", m[1])
+		}
 	}
 }

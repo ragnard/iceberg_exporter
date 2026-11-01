@@ -306,9 +306,6 @@ func (s *Scraper) optionsFor(catalogName string) icebergstats.Options {
 		Manifests:            s.cfg.Scrape.Manifests.Enabled,
 		ManifestConcurrency:  s.cfg.Scrape.Manifests.Concurrency,
 		MaxTrackedPartitions: s.cfg.Scrape.Partitions.MaxTracked,
-		SmallFileBytes:       s.cfg.Scrape.SmallFileBytes,
-		LargeFileBytes:       s.cfg.Scrape.LargeFileBytes,
-		TargetFileBytes:      s.cfg.Scrape.TargetFileBytes,
 	}
 }
 

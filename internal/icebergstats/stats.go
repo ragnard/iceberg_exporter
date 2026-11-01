@@ -24,10 +24,7 @@ type TableStats struct {
 	SnapshotCount              int
 	HasSnapshots               bool
 	OldestSnapshotTimestampMs  int64
-	RefCount                   int
 	LastSequenceNumber         int64
-
-	TargetFileSizeBytes int64
 
 	// Refs by type. Branch counts include main.
 	Branches int
@@ -73,8 +70,6 @@ type TableStats struct {
 	EqualityDeleteRecords int64
 	DeletionVectors       int64
 	DeletionVectorRecords int64
-	SmallFiles            int64
-	LargeFiles            int64
 	FileSizes             Histogram
 
 	Partitions                 int64
@@ -87,7 +82,7 @@ type TableStats struct {
 
 	// FileStatsReused is true when the manifest-derived stats above were
 	// carried over from the previous collection instead of being read again,
-	// because the current snapshot and thresholds were unchanged.
+	// because the current snapshot and partition limit were unchanged.
 	FileStatsReused bool
 
 	// fileStatsKey identifies the inputs the manifest-derived stats were
@@ -98,14 +93,12 @@ type TableStats struct {
 // fileStatsKey captures everything manifest-derived stats depend on. Manifest
 // files are immutable, so a table's live files are fully determined by its
 // current snapshot. Partition specs are immutable per ID and need no key
-// entry. The thresholds are included because table properties (such as
-// write.target-file-size-bytes) can change without a new snapshot.
+// entry. maxTracked is included because it shapes the partition
+// distributions.
 type fileStatsKey struct {
-	tableUUID      string // distinguishes a dropped and recreated table
-	snapshotID     int64
-	smallFileBytes int64
-	largeFileBytes int64
-	maxTracked     int
+	tableUUID  string // distinguishes a dropped and recreated table
+	snapshotID int64
+	maxTracked int
 }
 
 // copyFileStats copies the manifest-derived stats from prev.
@@ -123,8 +116,6 @@ func (s *TableStats) copyFileStats(prev *TableStats) {
 	s.EqualityDeleteRecords = prev.EqualityDeleteRecords
 	s.DeletionVectors = prev.DeletionVectors
 	s.DeletionVectorRecords = prev.DeletionVectorRecords
-	s.SmallFiles = prev.SmallFiles
-	s.LargeFiles = prev.LargeFiles
 	// Histograms are shared, not copied: published stats are never mutated.
 	s.FileSizes = prev.FileSizes
 	s.Partitions = prev.Partitions
@@ -147,6 +138,7 @@ type TableSettings struct {
 	MetadataDeleteAfterCommit   bool
 	GCEnabled                   bool
 	ManifestMergeEnabled        bool
+	TargetFileSizeBytes         int64
 }
 
 // SnapshotSummary is the delta reported by the current snapshot's summary.

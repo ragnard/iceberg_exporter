@@ -150,10 +150,11 @@ scrape:
     concurrency: 8        # manifest files read in parallel per table
   partitions:
     max_tracked: 100000   # per-table partition aggregation limit
-  small_file_bytes: 67108864   # 64 MiB; 0 disables small-file counting
-  large_file_bytes: 0          # 0 = 2 × the table's target file size
-  target_file_size_bytes: 536870912  # fallback when the table has no property
 ```
+
+There are no file-size thresholds to configure: small- and large-file counts
+come from the `iceberg_table_file_size_bytes` histogram at query time (see
+[Example queries](#example-queries)).
 
 `${VAR}` placeholders inside YAML values are expanded from the environment
 after parsing, so credentials do not need to be stored in the file and are
@@ -177,7 +178,7 @@ failure is logged at warn level. Tables that disappear from the catalog are
 removed on the next successful discovery.
 
 Every refresh loads each table's metadata to see its current snapshot. If the
-snapshot (and the small/large file thresholds) are unchanged since the last
+snapshot (and `scrape.partitions.max_tracked`) are unchanged since the last
 successful collection, the manifest-derived metrics are reused and no
 manifest list or manifest is read. Manifests are immutable, so the result is
 identical; only changed tables pay for a manifest scan. The cache is the
@@ -205,22 +206,20 @@ Common labels: `catalog`, `namespace`, `table`.
 
 | Metric | Description |
 |---|---|
-| `iceberg_table_info` | Always 1 for a collected table |
 | `iceberg_table_format_version` | Iceberg format version |
 | `iceberg_table_partitioned` | 1 if the current spec has partition fields |
 | `iceberg_table_schema_count` | Number of schemas |
 | `iceberg_table_partition_spec_count` | Number of partition specs |
 | `iceberg_table_current_snapshot_timestamp_seconds` | Current snapshot time |
-| `iceberg_table_current_snapshot_age_seconds` | Age of the current snapshot |
 | `iceberg_table_last_updated_timestamp_seconds` | Last metadata update |
-| `iceberg_table_last_updated_age_seconds` | Age of the last update |
 | `iceberg_table_snapshot_count` | Retained snapshots |
 | `iceberg_table_oldest_snapshot_timestamp_seconds` | Oldest retained snapshot |
-| `iceberg_table_oldest_snapshot_age_seconds` | Age of the oldest snapshot |
-| `iceberg_table_ref_count` | Branches and tags |
 | `iceberg_table_last_sequence_number` | Last sequence number |
 | `iceberg_table_refs{type}` | Refs by `type` (`branch`, `tag`); branches include `main` |
-| `iceberg_table_oldest_ref_snapshot_age_seconds{type}` | Age of the snapshot referenced by the oldest non-main branch/tag; absent if none |
+| `iceberg_table_oldest_ref_snapshot_timestamp_seconds{type}` | Time of the snapshot referenced by the oldest non-main branch/tag; absent if none |
+
+Ages are not exported; compute them in PromQL, e.g.
+`time() - iceberg_table_current_snapshot_timestamp_seconds`.
 | `iceberg_table_metadata_log_entries` | Previous metadata files tracked in the metadata log |
 | `iceberg_table_last_operation_timestamp_seconds{operation}` | Newest retained snapshot per operation (`append`, `overwrite`, `delete`, `replace`); `replace` is typically compaction |
 | `iceberg_table_statistics_files` | Table statistics (Puffin) files |
@@ -242,7 +241,7 @@ retention set on the `main` branch ref overrides the table properties.
 | `iceberg_table_setting_metadata_delete_after_commit_enabled` | `write.metadata.delete-after-commit.enabled` | 0 |
 | `iceberg_table_setting_gc_enabled` | `gc.enabled` | 1 |
 | `iceberg_table_setting_manifest_merge_enabled` | `commit.manifest-merge.enabled` | 1 |
-| `iceberg_table_setting_target_file_size_bytes` | `write.target-file-size-bytes` | `scrape.target_file_size_bytes` (512 MiB) |
+| `iceberg_table_setting_target_file_size_bytes` | `write.target-file-size-bytes` | 512 MiB |
 
 ### Current snapshot delta
 
@@ -270,9 +269,7 @@ snapshot are counted; deleted entries are skipped.
 | `iceberg_table_delete_records` | Records in live delete files |
 | `iceberg_table_delete_files_by_type{type}` | Live delete files by `type` (`position`, `equality`, `deletion_vector`) |
 | `iceberg_table_delete_records_by_type{type}` | Records in live delete files by `type` |
-| `iceberg_table_small_files` | Files below `small_file_bytes` |
-| `iceberg_table_large_files` | Files above the large-file threshold |
-| `iceberg_table_file_size_bytes` | Histogram of data-file sizes |
+| `iceberg_table_file_size_bytes` | Histogram of data-file sizes; buckets at 1, 4, 16, 64, 256, 512 MiB and 1, 2, 4, 8, 16 GiB |
 
 ### Partitions (aggregates only)
 
@@ -309,9 +306,14 @@ evolution, the same logical partition can be counted more than once.
 ## Example queries
 
 ```promql
-# Tables with a high small-file ratio
-iceberg_table_small_files
+# Tables with a high small-file ratio (files of at most 64 MiB). Any bucket
+# bound works as the threshold; match le as the exporter renders it.
+sum without (le) (iceberg_table_file_size_bytes_bucket{le="6.7108864e+07"})
   / clamp_min(iceberg_table_data_files, 1) > 0.5
+
+# Large files: more than 1 GiB (2x the default 512 MiB target)
+iceberg_table_data_files
+  - on (catalog, namespace, table) sum without (le) (iceberg_table_file_size_bytes_bucket{le="1.073741824e+09"})
 
 # Average data file size
 iceberg_table_data_bytes / clamp_min(iceberg_table_data_files, 1)
@@ -324,13 +326,13 @@ iceberg_table_partition_bytes_max
 iceberg_table_delete_files > 0
 
 # Stale tables (no new snapshot in 24h)
-iceberg_table_current_snapshot_age_seconds > 86400
+time() - iceberg_table_current_snapshot_timestamp_seconds > 86400
 
 # Snapshot retention is not expiring old metadata
-iceberg_table_oldest_snapshot_age_seconds > 30 * 86400
+time() - iceberg_table_oldest_snapshot_timestamp_seconds > 30 * 86400
 
 # 90th percentile data-file size, per table
-histogram_quantile(0.9, sum by (catalog, namespace, table, le) (iceberg_table_file_size_bytes))
+histogram_quantile(0.9, sum by (catalog, namespace, table, le) (iceberg_table_file_size_bytes_bucket))
 ```
 
 ## Table health rules
@@ -388,7 +390,7 @@ topk(10, iceberg_table_problem{problem="small_files"})
 | `stale_refs` | warning | A non-main branch or tag references a snapshot older than 30 days |
 | `metadata_files_not_cleaned` | warning | Metadata log full and `write.metadata.delete-after-commit.enabled=false` |
 | `gc_disabled` | info | `gc.enabled=false` |
-| `small_files` | warning | More than 30% of data files are small, and more than 100 data files |
+| `small_files` | warning | More than 30% of data files are at most 64 MiB, and more than 100 data files |
 | `too_many_manifests` | warning | More than 1000 manifests |
 | `manifest_merge_disabled` | info | `commit.manifest-merge.enabled=false` |
 | `delete_file_buildup` | warning | Delete records exceed 10% of data records, and more than 10 delete files |

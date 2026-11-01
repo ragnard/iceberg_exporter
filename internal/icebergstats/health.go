@@ -16,6 +16,7 @@ const (
 	DefaultMetadataDeleteAfterCommit         = false                   // write.metadata.delete-after-commit.enabled
 	DefaultGCEnabled                         = true                    // gc.enabled
 	DefaultManifestMergeEnabled              = true                    // commit.manifest-merge.enabled
+	DefaultTargetFileSizeBytes         int64 = 512 << 20               // write.target-file-size-bytes
 )
 
 // SnapshotOperations are the snapshot operations reported in
@@ -116,6 +117,7 @@ func tableSettings(md table.Metadata) TableSettings {
 		MetadataDeleteAfterCommit:   propBool(props, "write.metadata.delete-after-commit.enabled", DefaultMetadataDeleteAfterCommit),
 		GCEnabled:                   propBool(props, "gc.enabled", DefaultGCEnabled),
 		ManifestMergeEnabled:        propBool(props, "commit.manifest-merge.enabled", DefaultManifestMergeEnabled),
+		TargetFileSizeBytes:         propInt64(props, "write.target-file-size-bytes", DefaultTargetFileSizeBytes),
 	}
 	for name, ref := range md.Refs() {
 		if name != table.MainBranch {
