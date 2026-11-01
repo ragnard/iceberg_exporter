@@ -15,7 +15,7 @@ gofmt -w cmd internal
 ```
 
 - CI (`.github/workflows/ci.yml`) runs gofmt, `make vet-all-tags`, `make test-all-tags` and `make build`. `make test-all-tags` is the only check that compiles `//go:build` files, so run it locally too.
-- `.github/workflows/docker.yml` publishes multi-arch images to `ghcr.io/ragnard/iceberg_exporter` (default and `-full`) on `main` and `v*` tags; PRs build without pushing. Its `full` matrix entry duplicates `ALL_TAGS`, so keep the two in sync.
+- `.github/workflows/docker.yml` publishes `linux/amd64` images to `ghcr.io/ragnard/iceberg_exporter` (default and `-full`) on `main` and `v*` tags; PRs build without pushing. Its `full` matrix entry duplicates `ALL_TAGS`, so keep the two in sync.
 - Workflows are audited by zizmor (`zizmor.yml`). Pin every action to a full commit SHA with a `# vX.Y.Z` comment, keep top-level `permissions: {}` with per-job grants, and use `persist-credentials: false` on checkout. Dependabot bumps the pins.
 - `make docker` forwards `TAGS`/`VERSION` to a multi-stage `golang:1.27.3` -> distroless Debian 13 image; it builds with `CGO_ENABLED=0` and runs as nonroot with config expected at `/etc/iceberg_exporter/config.yaml`.
 - `go mod tidy` considers tagged files, so pgx/sqlite/cloud SDKs stay in `go.mod` even though they are not in the default binary.

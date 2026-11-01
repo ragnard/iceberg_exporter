@@ -58,7 +58,7 @@ MySQL needs no extra tag: the SQL catalog package registers the MySQL driver.
 
 ### Docker
 
-Prebuilt multi-arch (`linux/amd64`, `linux/arm64`) images are published to
+Prebuilt `linux/amd64` images are published to
 GHCR by the `Docker` workflow:
 
 | Tag | Contents |
