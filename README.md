@@ -188,7 +188,6 @@ Common labels: `catalog`, `namespace`, `table`.
 | `iceberg_table_oldest_snapshot_age_seconds` | Age of the oldest snapshot |
 | `iceberg_table_ref_count` | Branches and tags |
 | `iceberg_table_last_sequence_number` | Last sequence number |
-| `iceberg_table_target_file_size_bytes` | Effective target data-file size |
 | `iceberg_table_refs{type}` | Refs by `type` (`branch`, `tag`); branches include `main` |
 | `iceberg_table_oldest_ref_snapshot_age_seconds{type}` | Age of the snapshot referenced by the oldest non-main branch/tag; absent if none |
 | `iceberg_table_metadata_log_entries` | Previous metadata files tracked in the metadata log |
@@ -197,20 +196,22 @@ Common labels: `catalog`, `namespace`, `table`.
 | `iceberg_table_partition_statistics_files` | Partition statistics files |
 | `iceberg_table_current_snapshot_has_statistics` | 1 if a statistics file exists for the current snapshot |
 
-### Effective maintenance settings
+### Effective table settings
 
-Read from a fixed allowlist of table properties (falling back to the Iceberg
-default); no other properties are exported. Snapshot retention set on the
-`main` branch ref overrides the table properties.
+The `iceberg_table_setting_*` series report the value in effect for each
+table: the table property when set and valid, otherwise the default shown.
+Only this allowlist is read; no other properties are exported. Snapshot
+retention set on the `main` branch ref overrides the table properties.
 
 | Metric | Source | Default |
 |---|---|---|
-| `iceberg_table_snapshot_max_age_seconds` | `history.expire.max-snapshot-age-ms` | 5 days |
-| `iceberg_table_min_snapshots_to_keep` | `history.expire.min-snapshots-to-keep` | 1 |
-| `iceberg_table_metadata_previous_versions_max` | `write.metadata.previous-versions-max` | 100 |
-| `iceberg_table_metadata_delete_after_commit_enabled` | `write.metadata.delete-after-commit.enabled` | 0 |
-| `iceberg_table_gc_enabled` | `gc.enabled` | 1 |
-| `iceberg_table_manifest_merge_enabled` | `commit.manifest-merge.enabled` | 1 |
+| `iceberg_table_setting_snapshot_max_age_seconds` | `history.expire.max-snapshot-age-ms` | 5 days |
+| `iceberg_table_setting_min_snapshots_to_keep` | `history.expire.min-snapshots-to-keep` | 1 |
+| `iceberg_table_setting_metadata_previous_versions_max` | `write.metadata.previous-versions-max` | 100 |
+| `iceberg_table_setting_metadata_delete_after_commit_enabled` | `write.metadata.delete-after-commit.enabled` | 0 |
+| `iceberg_table_setting_gc_enabled` | `gc.enabled` | 1 |
+| `iceberg_table_setting_manifest_merge_enabled` | `commit.manifest-merge.enabled` | 1 |
+| `iceberg_table_setting_target_file_size_bytes` | `write.target-file-size-bytes` | `scrape.target_file_size_bytes` (512 MiB) |
 
 ### Current snapshot delta
 

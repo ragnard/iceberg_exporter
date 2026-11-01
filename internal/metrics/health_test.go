@@ -72,16 +72,16 @@ func TestCollectorRendersHealthMetrics(t *testing.T) {
 	mfs := gather(t, NewCollector(staticState{st: st}, BuildInfo{}))
 
 	for name, want := range map[string]float64{
-		"iceberg_table_metadata_log_entries":                 7,
-		"iceberg_table_statistics_files":                     2,
-		"iceberg_table_partition_statistics_files":           1,
-		"iceberg_table_current_snapshot_has_statistics":      1,
-		"iceberg_table_snapshot_max_age_seconds":             86400,
-		"iceberg_table_min_snapshots_to_keep":                3,
-		"iceberg_table_metadata_previous_versions_max":       50,
-		"iceberg_table_metadata_delete_after_commit_enabled": 1,
-		"iceberg_table_gc_enabled":                           0,
-		"iceberg_table_manifest_merge_enabled":               1,
+		"iceberg_table_metadata_log_entries":                         7,
+		"iceberg_table_statistics_files":                             2,
+		"iceberg_table_partition_statistics_files":                   1,
+		"iceberg_table_current_snapshot_has_statistics":              1,
+		"iceberg_table_setting_snapshot_max_age_seconds":             86400,
+		"iceberg_table_setting_min_snapshots_to_keep":                3,
+		"iceberg_table_setting_metadata_previous_versions_max":       50,
+		"iceberg_table_setting_metadata_delete_after_commit_enabled": 1,
+		"iceberg_table_setting_gc_enabled":                           0,
+		"iceberg_table_setting_manifest_merge_enabled":               1,
 	} {
 		if got := gaugeValue(t, mfs, name); got != want {
 			t.Errorf("%s = %v, want %v", name, got, want)

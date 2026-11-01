@@ -39,11 +39,11 @@ groups:
       - record: iceberg_table_problem
         expr: |
           iceberg_table_oldest_snapshot_age_seconds
-            > on (catalog, namespace, table) 2 * iceberg_table_snapshot_max_age_seconds
+            > on (catalog, namespace, table) 2 * iceberg_table_setting_snapshot_max_age_seconds
           and on (catalog, namespace, table)
-            iceberg_table_snapshot_count > on (catalog, namespace, table) iceberg_table_min_snapshots_to_keep
+            iceberg_table_snapshot_count > on (catalog, namespace, table) iceberg_table_setting_min_snapshots_to_keep
           and on (catalog, namespace, table)
-            iceberg_table_gc_enabled == 1
+            iceberg_table_setting_gc_enabled == 1
         labels: {problem: snapshots_not_expired, severity: warning}
 
       # Snapshot count large enough to bloat metadata.json. Value: snapshot
@@ -65,15 +65,15 @@ groups:
       - record: iceberg_table_problem
         expr: |
           iceberg_table_metadata_log_entries
-            >= on (catalog, namespace, table) iceberg_table_metadata_previous_versions_max
+            >= on (catalog, namespace, table) iceberg_table_setting_metadata_previous_versions_max
           and on (catalog, namespace, table)
-            iceberg_table_metadata_delete_after_commit_enabled == 0
+            iceberg_table_setting_metadata_delete_after_commit_enabled == 0
         labels: {problem: metadata_files_not_cleaned, severity: warning}
 
       # Garbage collection (snapshot expiration, orphan removal) is disabled.
       # Value: 0.
       - record: iceberg_table_problem
-        expr: iceberg_table_gc_enabled == 0
+        expr: iceberg_table_setting_gc_enabled == 0
         labels: {problem: gc_disabled, severity: info}
 
       # --- File layout -------------------------------------------------------
@@ -95,7 +95,7 @@ groups:
 
       # Automatic manifest merging on commit is disabled. Value: 0.
       - record: iceberg_table_problem
-        expr: iceberg_table_manifest_merge_enabled == 0
+        expr: iceberg_table_setting_manifest_merge_enabled == 0
         labels: {problem: manifest_merge_disabled, severity: info}
 
       # --- Row-level deletes -------------------------------------------------
