@@ -137,20 +137,37 @@ catalogs:
 scrape:
   interval: 5m
   timeout: 4m
-  concurrency: 4          # tables collected in parallel
-  catalogs: [prod]        # optional subset; defaults to all configured
-  namespaces:
-    include: ["**"]
-    exclude: ["tmp.**"]
-  tables:
-    include: ["**"]
-    exclude: ["**_staging"]
-  manifests:
+  concurrency: 4          # tables collected in parallel, across all catalogs
+  manifests:              # defaults; overridable per catalog
     enabled: true
     concurrency: 8        # manifest files read in parallel per table
   partitions:
     max_tracked: 100000   # per-table partition aggregation limit
+  catalogs:               # optional; omitted = every catalog, no filters
+    prod:
+      namespaces:
+        include: ["**"]
+        exclude: ["tmp.**"]
+      tables:
+        exclude: ["**_staging"]
+    staging:
+      manifests:
+        enabled: false    # metadata-only metrics for this catalog
 ```
+
+`scrape.catalogs` selects what is scraped and how, per catalog. When it is
+present, only the listed catalogs are scraped; a bare `name:` or `name: {}`
+uses the defaults. A name that is not defined under `catalogs` is a startup
+error. Each entry can set:
+
+| Key | Default |
+|---|---|
+| `namespaces.include` / `namespaces.exclude` | `["**"]` / none |
+| `tables.include` / `tables.exclude` | `["**"]` / none |
+| `manifests.enabled` / `manifests.concurrency` | `scrape.manifests` (each field inherits separately) |
+
+Interval, timeout, `scrape.concurrency` and `partitions.max_tracked` apply to
+the whole refresh and are not configurable per catalog.
 
 There are no file-size thresholds to configure: small- and large-file counts
 come from the `iceberg_table_file_size_bytes` histogram at query time (see
@@ -164,9 +181,10 @@ are typed from the expanded value. Comments are not expanded. `$$` produces a li
 `$`. Referencing an unset variable is a startup error. Catalog properties are
 never logged.
 
-Filter patterns match the full dotted namespace or table name. `**` spans
-namespace levels, and a trailing `.**` also matches the subtree root:
-`prod.**` matches `prod`, `prod.sales`, and `prod.sales.eu`. Both `*` and `**`
+Filter patterns match the full dotted namespace or table name within the
+catalog (without the catalog name). `**` spans namespace levels, and a
+trailing `.**` also matches the subtree root: `sales.**` matches `sales`,
+`sales.eu`, and `sales.eu.daily`. Both `*` and `**`
 may span dots; use `**` for clarity. Excludes win over includes.
 
 `scrape.timeout` applies to one complete refresh. Note that manifest and

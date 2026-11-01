@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -28,27 +27,15 @@ type Catalogs struct {
 // a catalog is reachable is only known per refresh and is reported through
 // metrics.
 func NewCatalogs(cfg *config.Config) (*Catalogs, error) {
-	names := cfg.Scrape.Catalogs
-	if len(names) == 0 {
-		names = make([]string, 0, len(cfg.Catalogs))
-		for name := range cfg.Catalogs {
-			names = append(names, name)
-		}
-	}
-	names = append([]string(nil), names...)
-	sort.Strings(names)
-
+	names := cfg.ScrapedCatalogs()
 	out := &Catalogs{
 		props: make(map[string]iceberg.Properties, len(names)),
 		load:  catalog.Load,
 	}
 	for _, name := range names {
-		if _, seen := out.props[name]; seen {
-			continue
-		}
 		catCfg, ok := cfg.Catalogs[name]
 		if !ok {
-			return nil, fmt.Errorf("scrape.catalogs references unknown catalog %q", name)
+			return nil, fmt.Errorf("scrape.catalogs.%s: unknown catalog %q", name, name)
 		}
 		if catCfg.Type != "" && !registry.HasCatalogType(catCfg.Type) {
 			return nil, fmt.Errorf("catalog %q: %w", name, registry.CatalogHint(catCfg.Type))

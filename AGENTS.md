@@ -60,6 +60,7 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 ## Gotchas
 
 - Config is parsed to a `yaml.Node`, `${VAR}` placeholders are expanded inside scalars only (`$$` = literal `$`; unset variables are errors; comments are not expanded), then decoded. `yaml.Node.Decode` has no `KnownFields`, so `checkKnownFields` enforces strict keys: typos fail. Keep it working if you add custom-unmarshaled config types.
+- Scrape policy is per catalog: `scrape.catalogs.<name>` holds filters and `manifests` overrides (pointer fields, so unset inherits `scrape.manifests`). Read it only through `Config.ScrapedCatalogs()` / `Config.CatalogScrape(name)`, which apply the defaults; the scraper compiles one `catalogPolicy` per catalog in `New`. Keep refresh-wide settings (interval, timeout, `concurrency`, `max_tracked`) global.
 - Never log catalog `properties` or credentials.
 - `scrape.timeout` cannot interrupt iceberg-go manifest/object-store reads (APIs are not context-aware); only context-aware work and per-entry checks are cancellable.
 - Dotted namespace/table labels can collide for exotic namespace components. Internal keys are length-prefixed and collision-free; tables are sorted with the internal key as tie-breaker (`compareRefs`), so the collector deterministically keeps the same table, skips the other duplicate label sets and reports `iceberg_exporter_duplicate_table_labels` rather than failing the scrape.

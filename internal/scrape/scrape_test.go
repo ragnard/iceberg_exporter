@@ -113,8 +113,6 @@ func testConfig() *config.Config {
 			Interval:    config.Duration(time.Hour),
 			Timeout:     config.Duration(time.Minute),
 			Concurrency: 2,
-			Namespaces:  config.Filter{Include: []string{"**"}},
-			Tables:      config.Filter{Include: []string{"**"}},
 			Manifests:   config.ManifestsConfig{Enabled: true, Concurrency: 2},
 			Partitions:  config.PartitionsConfig{MaxTracked: 100},
 		},
@@ -224,7 +222,9 @@ func TestDiscoverAndFilter(t *testing.T) {
 		tbl:  tbl,
 	}
 	cfg := testConfig()
-	cfg.Scrape.Tables.Exclude = []string{"ns.t2"}
+	cfg.Scrape.Catalogs = map[string]config.CatalogScrapeConfig{
+		"prod": {Tables: config.Filter{Exclude: []string{"ns.t2"}}},
+	}
 	s := newTestScraper(t, cfg, fc)
 
 	var errorsSeen int
@@ -308,7 +308,9 @@ func TestNamespaceExclusion(t *testing.T) {
 		tbl:  testTable(t),
 	}
 	cfg := testConfig()
-	cfg.Scrape.Namespaces.Exclude = []string{"ns"}
+	cfg.Scrape.Catalogs = map[string]config.CatalogScrapeConfig{
+		"prod": {Namespaces: config.Filter{Exclude: []string{"ns"}}},
+	}
 	s := newTestScraper(t, cfg, fc)
 	s.Refresh(context.Background())
 	if got := s.State().Discovered; got != 0 {
@@ -454,5 +456,51 @@ func TestDiscoverToleratesVanishedNamespace(t *testing.T) {
 	got := discoveredNames(t, newTestScraper(t, testConfig(), fc))
 	if want := []string{"ns.t1"}; !slices.Equal(got, want) {
 		t.Errorf("discovered = %v, want %v", got, want)
+	}
+}
+
+func TestPerCatalogScrapePolicy(t *testing.T) {
+	fc := &fakeCatalog{
+		namespaces: []table.Identifier{{"ns"}},
+		tables:     map[string][]table.Identifier{"ns": {{"ns", "t1"}, {"ns", "t2"}}},
+		tbl:        testTable(t),
+	}
+	cats := &Catalogs{
+		order: []string{"archive", "prod"},
+		props: map[string]iceberg.Properties{"archive": {}, "prod": {}},
+		load: func(context.Context, string, iceberg.Properties) (catalog.Catalog, error) {
+			return fc, nil
+		},
+	}
+	disabled := false
+	cfg := testConfig()
+	cfg.Scrape.Catalogs = map[string]config.CatalogScrapeConfig{
+		"prod":    {Tables: config.Filter{Exclude: []string{"ns.t2"}}},
+		"archive": {Manifests: config.ManifestsOverride{Enabled: &disabled}},
+	}
+	s, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), cats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Refresh(context.Background())
+
+	got := map[string][]string{}
+	fileStats := map[string]bool{}
+	for _, res := range s.State().Tables {
+		got[res.Ref.Catalog] = append(got[res.Ref.Catalog], res.Ref.Namespace+"."+res.Ref.Table)
+		if res.Stats != nil && res.Stats.FileStatsCollected {
+			fileStats[res.Ref.Catalog] = true
+		}
+	}
+	// The prod table filter does not apply to archive.
+	if want := []string{"ns.t1", "ns.t2"}; !slices.Equal(got["archive"], want) {
+		t.Errorf("archive tables = %v, want %v", got["archive"], want)
+	}
+	if want := []string{"ns.t1"}; !slices.Equal(got["prod"], want) {
+		t.Errorf("prod tables = %v, want %v", got["prod"], want)
+	}
+	// Only archive disables manifest reads.
+	if fileStats["archive"] || !fileStats["prod"] {
+		t.Errorf("file stats collected = %v, want prod only", fileStats)
 	}
 }
