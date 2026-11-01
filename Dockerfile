@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
 
 ARG TAGS=""
 ARG VERSION=dev
 ARG REVISION=unknown
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -16,7 +18,7 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -trimpath \
         -tags "${TAGS}" \
         -ldflags "-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" \
