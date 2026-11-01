@@ -186,7 +186,7 @@ scrape:
   catalogs:
     prod:
       tables:
-        exclude: ["[bad"]
+        exclude: ["a..b"]
 `,
 			wantErr: true,
 		},

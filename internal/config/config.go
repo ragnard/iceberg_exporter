@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
 )
 
@@ -432,60 +431,8 @@ func (c *Config) Validate() error {
 }
 
 func validateFilter(prefix string, f Filter) error {
-	var errs []error
-	for _, p := range append(append([]string{}, f.Include...), f.Exclude...) {
-		if !doublestar.ValidatePattern(p) {
-			errs = append(errs, fmt.Errorf("%s: invalid pattern %q", prefix, p))
-		}
+	if _, err := CompileFilter(f); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
-	return errors.Join(errs...)
-}
-
-// Matcher is a compiled Filter.
-type Matcher struct {
-	include []string
-	exclude []string
-}
-
-// CompileFilter validates and compiles a filter.
-func CompileFilter(f Filter) (*Matcher, error) {
-	m := &Matcher{include: append([]string{}, f.Include...), exclude: append([]string{}, f.Exclude...)}
-	for _, p := range append(append([]string{}, m.include...), m.exclude...) {
-		if !doublestar.ValidatePattern(p) {
-			return nil, fmt.Errorf("invalid pattern %q", p)
-		}
-	}
-	return m, nil
-}
-
-// Match reports whether name is included and not excluded. Patterns match the
-// full dotted namespace or table name; both * and ** may span dots.
-func (m *Matcher) Match(name string) bool {
-	if !m.matchAny(m.include, name) {
-		return false
-	}
-	return !m.matchAny(m.exclude, name)
-}
-
-func (m *Matcher) matchAny(patterns []string, name string) bool {
-	for _, p := range patterns {
-		if matchPattern(p, name) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchPattern(pattern, name string) bool {
-	if ok, err := doublestar.Match(pattern, name); err == nil && ok {
-		return true
-	}
-	// A trailing ".**" is a subtree pattern; make it match the subtree root
-	// too, so "prod.**" includes the "prod" namespace itself.
-	if strings.HasSuffix(pattern, ".**") {
-		if ok, err := doublestar.Match(strings.TrimSuffix(pattern, ".**"), name); err == nil && ok {
-			return true
-		}
-	}
-	return false
+	return nil
 }

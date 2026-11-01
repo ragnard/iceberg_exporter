@@ -181,11 +181,28 @@ are typed from the expanded value. Comments are not expanded. `$$` produces a li
 `$`. Referencing an unset variable is a startup error. Catalog properties are
 never logged.
 
-Filter patterns match the full dotted namespace or table name within the
-catalog (without the catalog name). `**` spans namespace levels, and a
-trailing `.**` also matches the subtree root: `sales.**` matches `sales`,
-`sales.eu`, and `sales.eu.daily`. Both `*` and `**`
-may span dots; use `**` for clarity. Excludes win over includes.
+Filter patterns match the whole dotted namespace name (`namespaces`) or
+`namespace.table` name (`tables`) within the catalog, without the catalog
+name. `.` separates segments. A name is scraped if it matches an include and
+no exclude.
+
+| Pattern | Matches | Does not match |
+|---|---|---|
+| `*` | `sales` | `sales.eu` |
+| `sales.*` | `sales`, `sales.eu` | `sales.eu.daily` |
+| `sales.**` | `sales`, `sales.eu`, `sales.eu.daily` | `salesx` |
+| `sales.*.orders` | `sales.eu.orders` | `sales.orders`, `sales.eu.daily.orders` |
+| `sales.**.orders` | `sales.orders`, `sales.eu.daily.orders` | |
+| `**.staging` | `staging`, `a.b.staging` | `a.staging_old` |
+| `tmp*` | `tmp`, `tmp_1` | `tmp.x` |
+| `**_staging` | `orders_staging`, `ns.orders_staging` | |
+
+- `*` matches within one segment and never crosses a `.`. As a whole segment
+  it is exactly one segment; a trailing `.*` also matches the parent.
+- `**` as a whole segment is zero or more segments. Inside a segment it
+  matches anything, dots included.
+- Every other character is literal; there is no `?`, `[...]` or `{a,b}`.
+  Empty segments (`a..b`) and `***` are rejected at startup.
 
 `scrape.timeout` applies to one complete refresh. Note that manifest and
 object-store reads inside iceberg-go are not context-aware, so a blocked object
