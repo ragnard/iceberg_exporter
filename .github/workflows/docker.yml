@@ -67,22 +67,24 @@ jobs:
       # Fresh runners start with empty BuildKit cache mounts, so every build
       # would download all modules and compile every dependency. Persist the
       # mount contents via actions/cache and inject/extract them with
-      # buildkit-cache-dance. The commit SHA in the key saves a fresh build
-      # cache on every main push; restore-keys pick up the newest one.
+      # buildkit-cache-dance. The key is the go.sum hash: dependencies (the
+      # expensive part to compile) only change with go.sum, and extracting the
+      # caches from BuildKit takes ~2 minutes, so main extracts and saves only
+      # when the key is new.
       #
       # zizmor flags any cache in a workflow with a tag (release) trigger. Only
       # main pushes write this cache, PRs only read it (and main can never read
       # PR-scoped caches), and tag builds skip caching entirely.
       - name: Restore and save Go caches
+        id: gocache
         if: env.CACHE_MODE == 'save'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0 # zizmor: ignore[cache-poisoning]
         with:
           path: |
             go-mod
             go-build
-          key: docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}-
             docker-go-${{ matrix.variant.name }}-
 
       - name: Restore Go caches
@@ -92,13 +94,13 @@ jobs:
           path: |
             go-mod
             go-build
-          key: docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          key: docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            docker-go-${{ matrix.variant.name }}-${{ hashFiles('go.sum') }}-
             docker-go-${{ matrix.variant.name }}-
 
       # Must come after the cache step: post steps run in reverse, so the
       # caches are extracted from BuildKit before actions/cache saves them.
+      # Extraction is skipped unless a new cache will be saved.
       - name: Inject Go caches into BuildKit
         if: env.CACHE_MODE != 'none'
         uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
@@ -109,7 +111,7 @@ jobs:
               "go-mod": "/go/pkg/mod",
               "go-build": "/root/.cache/go-build"
             }
-          skip-extraction: ${{ env.CACHE_MODE != 'save' }}
+          skip-extraction: ${{ env.CACHE_MODE != 'save' || steps.gocache.outputs.cache-hit == 'true' }}
 
       - name: Log in to GHCR
         if: env.PUSH == 'true'
