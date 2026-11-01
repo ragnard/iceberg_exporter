@@ -161,6 +161,14 @@ collected values; only its `iceberg_table_scrape_success` drops to 0, and the
 failure is logged at warn level. Tables that disappear from the catalog are
 removed on the next successful discovery.
 
+Catalog clients are created fresh for every refresh and closed when it
+finishes, so no connection (REST session, Hive Thrift transport, SQL pool) is
+reused across refreshes and a broken one cannot stick. At startup the exporter
+only checks that the selected catalogs exist and are compiled in; it does not
+connect. A catalog that cannot be loaded during a refresh counts as a
+discovery failure: `iceberg_exporter_scrape_success` drops to 0 and its tables
+keep their previous values with `iceberg_table_scrape_success=0`.
+
 Hive catalog table loads are serialized internally because the Hive Thrift
 client is not safe for concurrent use. Only the table load (metastore lookup
 and metadata file read) is serialized; manifest reads for Hive tables still run up to

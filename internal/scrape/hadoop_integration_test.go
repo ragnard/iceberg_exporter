@@ -43,8 +43,7 @@ func TestHadoopCatalogIntegration(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cats := &Catalogs{byName: map[string]catalog.Catalog{"local": cat}, order: []string{"local"}}
-	s, err := New(testConfig(), log, cats)
+	s, err := New(testConfig(), log, fixedCatalogs("local", cat))
 	if err != nil {
 		t.Fatal(err)
 	}

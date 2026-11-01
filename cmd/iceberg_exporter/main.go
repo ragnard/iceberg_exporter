@@ -68,19 +68,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	catalogs, err := scrape.LoadCatalogs(ctx, cfg)
+	// Validates catalog selection and build tags without connecting; each
+	// refresh opens (and closes) its own catalog clients.
+	catalogs, err := scrape.NewCatalogs(cfg)
 	if err != nil {
 		return err
 	}
-	catalogsClosed := false
-	defer func() {
-		if catalogsClosed {
-			return
-		}
-		if err := catalogs.Close(); err != nil {
-			log.Warn("closing catalogs", "error", err)
-		}
-	}()
 
 	scraper, err := scrape.New(cfg, log, catalogs)
 	if err != nil {
@@ -171,10 +164,6 @@ func run() error {
 	case <-shutdownCtx.Done():
 		log.Warn("scraper did not stop before the shutdown deadline")
 	}
-	if err := catalogs.Close(); err != nil && runErr == nil {
-		runErr = fmt.Errorf("close catalogs: %w", err)
-	}
-	catalogsClosed = true
 	return runErr
 }
 

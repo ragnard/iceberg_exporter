@@ -123,14 +123,92 @@ func testConfig() *config.Config {
 	}
 }
 
+// fixedCatalogs configures one catalog whose loader always returns cat.
+func fixedCatalogs(name string, cat catalog.Catalog) *Catalogs {
+	return &Catalogs{
+		order: []string{name},
+		props: map[string]iceberg.Properties{name: {}},
+		load: func(context.Context, string, iceberg.Properties) (catalog.Catalog, error) {
+			return cat, nil
+		},
+	}
+}
+
+// closingCatalog records Close calls.
+type closingCatalog struct {
+	*fakeCatalog
+	closed *int
+}
+
+func (c closingCatalog) Close() error { *c.closed++; return nil }
+
+func TestCatalogsAreReopenedEveryRefresh(t *testing.T) {
+	fc := &fakeCatalog{
+		namespaces: []table.Identifier{{"ns"}},
+		tables:     map[string][]table.Identifier{"ns": {{"ns", "t1"}}},
+		tbl:        testTable(t),
+	}
+	var loads, closed int
+	var loadErr error
+	cats := fixedCatalogs("prod", nil)
+	cats.load = func(context.Context, string, iceberg.Properties) (catalog.Catalog, error) {
+		loads++
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		return closingCatalog{fakeCatalog: fc, closed: &closed}, nil
+	}
+	var tableErrors int
+	s, err := New(testConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), cats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetTableErrorObserver(func(string) { tableErrors++ })
+
+	for i := 1; i <= 2; i++ {
+		s.Refresh(context.Background())
+		if loads != i || closed != i {
+			t.Fatalf("after refresh %d: loads/closes = %d/%d, want %d/%d", i, loads, closed, i, i)
+		}
+		if st := s.State(); !st.Success || st.Collected != 1 {
+			t.Fatalf("refresh %d: success/collected = %v/%d, want true/1", i, st.Success, st.Collected)
+		}
+	}
+
+	// A catalog that cannot be loaded is a discovery failure: its tables
+	// are retained with their previous stats and marked as failing.
+	loadErr = errors.New("metastore unreachable")
+	s.Refresh(context.Background())
+	st := s.State()
+	if st.Success || st.DiscoveryErrors != 1 {
+		t.Errorf("success/discovery errors = %v/%d, want false/1", st.Success, st.DiscoveryErrors)
+	}
+	if len(st.Tables) != 1 {
+		t.Fatalf("len(Tables) = %d, want 1 retained table", len(st.Tables))
+	}
+	if res := st.Tables[0]; res.Success || res.Stats == nil || res.LastSuccess.IsZero() {
+		t.Errorf("retained table = success %v, stats %v, last success %v; want failing with previous stats",
+			res.Success, res.Stats != nil, res.LastSuccess)
+	}
+	if tableErrors != 1 {
+		t.Errorf("table errors = %d, want 1", tableErrors)
+	}
+	if closed != 2 {
+		t.Errorf("closes = %d, want 2 (nothing to close after a failed load)", closed)
+	}
+
+	// The next refresh recovers with a fresh client.
+	loadErr = nil
+	s.Refresh(context.Background())
+	if st := s.State(); !st.Success || st.Collected != 1 {
+		t.Errorf("after recovery: success/collected = %v/%d, want true/1", st.Success, st.Collected)
+	}
+}
+
 func newTestScraper(t *testing.T, cfg *config.Config, fc *fakeCatalog) *Scraper {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cats := &Catalogs{
-		byName: map[string]catalog.Catalog{"prod": fc},
-		order:  []string{"prod"},
-	}
-	s, err := New(cfg, log, cats)
+	s, err := New(cfg, log, fixedCatalogs("prod", fc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +385,9 @@ func TestDiscoveryFailureRetainsTables(t *testing.T) {
 
 func discoveredNames(t *testing.T, s *Scraper) []string {
 	t.Helper()
-	refs, errs := s.discover(context.Background())
+	cats := s.catalogs.open(context.Background())
+	defer cats.close(s.log)
+	refs, errs := s.discover(context.Background(), cats)
 	if len(errs) > 0 {
 		t.Fatalf("discover() errors = %v", errs)
 	}

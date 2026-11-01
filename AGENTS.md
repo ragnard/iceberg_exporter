@@ -35,6 +35,7 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 ## Architecture and invariants
 
 - `internal/scrape`: discovery, refresh scheduling, table state. `Refresh` is serialized by `refreshMu`; `State` is immutable after `atomic.Pointer.Store`.
+- Catalog clients live for one refresh only: `Refresh` calls `Catalogs.open` and closes every client when it returns. Do not cache clients across refreshes (the Hive Thrift client has no reconnect logic, so a dropped connection would stick). `NewCatalogs` at startup validates without connecting; a catalog load failure is a per-refresh discovery error.
 - `internal/icebergstats`: metadata + manifest scanning into plain values. `Collect` reads only the current snapshot and uses `Entries(fs, true)` so deleted entries are excluded.
 - `internal/metrics`: renders `scrape.State` on each Prometheus scrape. Do not call catalogs/object stores from `Collect`; `/metrics` must stay cache-only.
 - Hive catalog table loads are serialized via `Scraper.loadLock` → `icebergstats.Options.LoadLock` because its Thrift client is not concurrency-safe. The lock covers only `LoadTable`; manifest reads must stay outside it. Keep that path if changing table workers.
