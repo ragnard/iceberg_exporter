@@ -47,6 +47,7 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 - Unpartitioned tables report `iceberg_table_partitions=1` (implicit partition); `partitioned` counts only non-void spec fields.
 - Do not expose snapshot IDs (as labels or gauges): a label creates a new series per commit and int64 IDs lose precision as floats.
 - Keep Prometheus units `_seconds`; metric names/descriptors live only in `internal/metrics/metrics.go`.
+- Table health checks live in `prometheus/iceberg_exporter.rules.yml` as recording rules into `iceberg_table_problem{problem,severity}`; the exporter only exports facts and allowlisted effective table settings, never judgments. `TestRulesReferenceKnownMetrics` fails if rules reference a missing metric; run `make rules-check` (promtool in docker) after changing rules or metric names, and add a promtool test case per new problem.
 - Histograms use cumulative buckets from `icebergstats.Histogram`; do not hand-build `le` values.
 - Summary bytes are all file bytes (including delete files); `data_records` is records in live data files before deletes are applied.
 

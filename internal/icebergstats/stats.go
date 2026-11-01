@@ -29,6 +29,31 @@ type TableStats struct {
 
 	TargetFileSizeBytes int64
 
+	// Refs by type. Branch counts include main.
+	Branches int
+	Tags     int
+	// Timestamp of the oldest snapshot referenced by a non-main branch or
+	// tag; only meaningful when the matching Has* flag is set.
+	HasOldestBranch        bool
+	OldestBranchSnapshotMs int64
+	HasOldestTag           bool
+	OldestTagSnapshotMs    int64
+
+	// MetadataLogEntries is the number of previous metadata files tracked
+	// in the metadata log.
+	MetadataLogEntries int
+
+	// LastOperationMs is the timestamp of the newest retained snapshot for
+	// each known snapshot operation (append, overwrite, delete, replace).
+	// Operations without a retained snapshot are absent.
+	LastOperationMs map[string]int64
+
+	StatisticsFiles              int
+	PartitionStatisticsFiles     int
+	CurrentSnapshotHasStatistics bool
+
+	Settings TableSettings
+
 	HasLastSnapshotSummary bool
 	LastSnapshot           SnapshotSummary
 
@@ -40,9 +65,17 @@ type TableStats struct {
 	DataRecords        int64
 	DeleteFiles        int64
 	DeleteRecords      int64
-	SmallFiles         int64
-	LargeFiles         int64
-	FileSizes          Histogram
+	// Delete files split by kind. Deletion vectors are position deletes
+	// stored in Puffin files (format v3).
+	PositionDeleteFiles   int64
+	PositionDeleteRecords int64
+	EqualityDeleteFiles   int64
+	EqualityDeleteRecords int64
+	DeletionVectors       int64
+	DeletionVectorRecords int64
+	SmallFiles            int64
+	LargeFiles            int64
+	FileSizes             Histogram
 
 	Partitions                 int64
 	PartitionFiles             Histogram
@@ -51,6 +84,18 @@ type TableStats struct {
 	PartitionFilesMax          int64
 	PartitionBytesMax          int64
 	PartitionTrackingTruncated bool
+}
+
+// TableSettings are effective maintenance-related table settings: the table
+// property when set and valid, otherwise the Iceberg default. Only this
+// allowlist is read; other properties are never exported.
+type TableSettings struct {
+	SnapshotMaxAgeMs            int64
+	MinSnapshotsToKeep          int64
+	MetadataPreviousVersionsMax int64
+	MetadataDeleteAfterCommit   bool
+	GCEnabled                   bool
+	ManifestMergeEnabled        bool
 }
 
 // SnapshotSummary is the delta reported by the current snapshot's summary.
