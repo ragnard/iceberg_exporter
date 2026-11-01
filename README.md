@@ -356,6 +356,25 @@ defines one alert, `IcebergTableProblem`, for warning/critical problems held
 for 1h. `make rules-check` validates the file and runs its promtool unit tests
 (`prometheus/iceberg_exporter.rules_test.yml`) in a container.
 
+### Prometheus Operator
+
+[`prometheus/iceberg_exporter.prometheusrule.yaml`](prometheus/iceberg_exporter.prometheusrule.yaml)
+is a `monitoring.coreos.com/v1` `PrometheusRule` with the same groups, generated
+from the rules file above (`make rules-generate`; `make test` fails if it is
+stale). Apply it with `kubectl apply -n <namespace> -f`, and add the labels
+your Prometheus `ruleSelector` matches (for example `release: prometheus` for
+kube-prometheus-stack) with a kustomize patch or `kubectl label` instead of
+editing the generated file:
+
+```yaml
+# kustomization.yaml
+resources:
+  - iceberg_exporter.prometheusrule.yaml   # copied from this repository
+labels:
+  - pairs: {release: prometheus}
+    includeSelectors: false
+```
+
 Not covered, because table metadata does not record them: orphan files,
 commit conflicts, and dangling delete files (which need per-partition state).
 
@@ -368,6 +387,7 @@ make test-race
 make test-all-tags
 make vet
 make rules-check   # promtool via docker; CONTAINER=podman or PROMTOOL=promtool to override
+make rules-generate  # regenerate the PrometheusRule after editing the rules file
 ```
 
 `make test-all-tags` compiles and tests every optional backend so tagged files
