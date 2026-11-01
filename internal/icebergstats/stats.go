@@ -117,6 +117,12 @@ func (s *TableStats) copyFileStats(prev *TableStats) {
 	s.DataRecords = prev.DataRecords
 	s.DeleteFiles = prev.DeleteFiles
 	s.DeleteRecords = prev.DeleteRecords
+	s.PositionDeleteFiles = prev.PositionDeleteFiles
+	s.PositionDeleteRecords = prev.PositionDeleteRecords
+	s.EqualityDeleteFiles = prev.EqualityDeleteFiles
+	s.EqualityDeleteRecords = prev.EqualityDeleteRecords
+	s.DeletionVectors = prev.DeletionVectors
+	s.DeletionVectorRecords = prev.DeletionVectorRecords
 	s.SmallFiles = prev.SmallFiles
 	s.LargeFiles = prev.LargeFiles
 	// Histograms are shared, not copied: published stats are never mutated.
