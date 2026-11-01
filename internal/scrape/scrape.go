@@ -94,6 +94,9 @@ type State struct {
 	Discovered      int
 	Collected       int
 	Failing         int
+	// FileStatsReused counts tables collected without reading manifests
+	// because their current snapshot was unchanged since the last refresh.
+	FileStatsReused int
 	Tables          []TableResult
 }
 
@@ -196,6 +199,9 @@ func (s *Scraper) Refresh(ctx context.Context) {
 			if catErr == nil {
 				opts := s.optionsFor(ref.Catalog)
 				opts.LoadLock = s.loadLock(ref.Catalog, cat)
+				// s.results is not written until all workers finish, so it
+				// is safe to read here without mu.
+				opts.Previous = s.results[ref.Key()].Stats
 				stats, err = icebergstats.Collect(gctx, cat, ref.Identifier, opts)
 			}
 			now := time.Now()
@@ -233,11 +239,14 @@ func (s *Scraper) Refresh(ctx context.Context) {
 
 	finished := time.Now()
 	tables := make([]TableResult, 0, len(results))
-	collected, failing := 0, 0
+	collected, failing, reused := 0, 0, 0
 	for _, res := range results {
 		tables = append(tables, res)
 		if res.Success {
 			collected++
+			if res.Stats != nil && res.Stats.FileStatsReused {
+				reused++
+			}
 		} else {
 			failing++
 		}
@@ -254,6 +263,7 @@ func (s *Scraper) Refresh(ctx context.Context) {
 		Discovered:      len(refs),
 		Collected:       collected,
 		Failing:         failing,
+		FileStatsReused: reused,
 		Tables:          tables,
 	}
 	s.state.Store(st)
@@ -263,6 +273,7 @@ func (s *Scraper) Refresh(ctx context.Context) {
 		"discovered", st.Discovered,
 		"collected", st.Collected,
 		"failing", st.Failing,
+		"file_stats_reused", st.FileStatsReused,
 		"success", st.Success,
 	)
 	if !st.Success {

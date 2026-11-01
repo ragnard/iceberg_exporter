@@ -33,6 +33,11 @@ type Options struct {
 	// Use it for catalog clients that are not safe for concurrent use;
 	// manifest reads happen outside the lock.
 	LoadLock sync.Locker
+
+	// Previous is the table's last successfully collected stats, if any.
+	// When its current snapshot and thresholds match, its manifest-derived
+	// stats are reused and no manifest list or manifest is read.
+	Previous *TableStats
 }
 
 func (o Options) withDefaults() Options {
@@ -136,6 +141,19 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 		return s, nil
 	}
 
+	key := fileStatsKey{
+		tableUUID:      md.TableUUID().String(),
+		snapshotID:     snap.SnapshotID,
+		smallFileBytes: opts.SmallFileBytes,
+		largeFileBytes: largeFileBytes,
+		maxTracked:     opts.MaxTrackedPartitions,
+	}
+	if prev := opts.Previous; prev != nil && prev.FileStatsCollected && prev.fileStatsKey == key {
+		s.copyFileStats(prev)
+		s.FileStatsReused = true
+		return s, nil
+	}
+
 	fs, err := tbl.FS(ctx)
 	if err != nil {
 		return nil, wrapIOError(tbl.Location(), err)
@@ -169,6 +187,7 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 
 	acc.finalize(s)
 	s.FileStatsCollected = true
+	s.fileStatsKey = key
 	return s, nil
 }
 

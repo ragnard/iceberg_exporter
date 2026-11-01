@@ -161,6 +161,14 @@ collected values; only its `iceberg_table_scrape_success` drops to 0, and the
 failure is logged at warn level. Tables that disappear from the catalog are
 removed on the next successful discovery.
 
+Every refresh loads each table's metadata to see its current snapshot. If the
+snapshot (and the small/large file thresholds) are unchanged since the last
+successful collection, the manifest-derived metrics are reused and no
+manifest list or manifest is read. Manifests are immutable, so the result is
+identical; only changed tables pay for a manifest scan. The cache is the
+previous result held in memory, so the first refresh after a restart reads
+everything.
+
 Catalog clients are created fresh for every refresh and closed when it
 finishes, so no connection (REST session, Hive Thrift transport, SQL pool) is
 reused across refreshes and a broken one cannot stick. At startup the exporter
@@ -252,6 +260,7 @@ evolution, the same logical partition can be counted more than once.
 | `iceberg_exporter_tables_discovered` | Tables found |
 | `iceberg_exporter_tables_collected` | Tables collected successfully |
 | `iceberg_exporter_tables_failing` | Tables whose last collection failed |
+| `iceberg_exporter_tables_file_stats_reused` | Tables whose file stats were reused without reading manifests (snapshot unchanged) |
 | `iceberg_exporter_table_errors_total` | Failed table collections, by catalog |
 | `iceberg_exporter_duplicate_table_labels` | Tables skipped because their labels collided |
 | `iceberg_table_scrape_success` | Per-table success of the latest refresh |

@@ -337,8 +337,10 @@ func TestCollectWithManifests(t *testing.T) {
 	// table filesystem is opened for manifest reads.
 	var loadLock sync.Mutex
 	var heldDuringLoad, heldDuringFS bool
+	var fsOpens int
 	tbl := table.New(table.Identifier{"db", "tbl"}, md, "mem://bucket/metadata.json",
 		func(context.Context) (icebergio.IO, error) {
+			fsOpens++
 			heldDuringFS = !loadLock.TryLock()
 			if !heldDuringFS {
 				loadLock.Unlock()
@@ -352,7 +354,7 @@ func TestCollectWithManifests(t *testing.T) {
 		}
 	}}
 
-	s, err := Collect(context.Background(), cat, table.Identifier{"db", "tbl"}, Options{
+	opts := Options{
 		Catalog:              "prod",
 		Manifests:            true,
 		ManifestConcurrency:  2,
@@ -360,9 +362,13 @@ func TestCollectWithManifests(t *testing.T) {
 		SmallFileBytes:       150,
 		LargeFileBytes:       250,
 		LoadLock:             &loadLock,
-	})
+	}
+	s, err := Collect(context.Background(), cat, table.Identifier{"db", "tbl"}, opts)
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
+	}
+	if s.FileStatsReused || fsOpens != 1 {
+		t.Errorf("first collection: reused/fs opens = %v/%d, want false/1", s.FileStatsReused, fsOpens)
 	}
 	if !heldDuringLoad || heldDuringFS {
 		t.Errorf("load lock held during load/fs = %v/%v, want true/false", heldDuringLoad, heldDuringFS)
@@ -388,4 +394,64 @@ func TestCollectWithManifests(t *testing.T) {
 	if !s.HasCurrentSnapshot || s.CurrentSnapshotID != snapshotID {
 		t.Errorf("current snapshot = %v/%d, want true/%d", s.HasCurrentSnapshot, s.CurrentSnapshotID, snapshotID)
 	}
+
+	testFileStatsReuse(t, cat, opts, s, &fsOpens)
+}
+
+// testFileStatsReuse checks that manifest-derived stats are reused only when
+// the snapshot, table UUID and thresholds are unchanged.
+func testFileStatsReuse(t *testing.T, cat catalog.Catalog, opts Options, first *TableStats, fsOpens *int) {
+	t.Helper()
+	ident := table.Identifier{"db", "tbl"}
+
+	// Unchanged: no filesystem access, identical file stats.
+	opts.Previous = first
+	opens := *fsOpens
+	s, err := Collect(context.Background(), cat, ident, opts)
+	if err != nil {
+		t.Fatalf("Collect(unchanged) error = %v", err)
+	}
+	if !s.FileStatsReused || *fsOpens != opens {
+		t.Errorf("unchanged: reused/fs opens = %v/%d, want true/%d", s.FileStatsReused, *fsOpens, opens)
+	}
+	if s.DataFiles != first.DataFiles || s.DataBytes != first.DataBytes || s.ManifestCount != first.ManifestCount ||
+		s.Partitions != first.Partitions || s.FileSizes.Count != first.FileSizes.Count || !s.FileStatsCollected {
+		t.Errorf("unchanged: reused stats differ from the first collection")
+	}
+
+	// A reused result can itself be reused on the next refresh.
+	opts.Previous = s
+	if s2, err := Collect(context.Background(), cat, ident, opts); err != nil || !s2.FileStatsReused {
+		t.Errorf("chained reuse: reused = %v, err = %v; want true, nil", s2 != nil && s2.FileStatsReused, err)
+	}
+
+	recollects := func(name string, prev *TableStats, opts Options) {
+		t.Helper()
+		opts.Previous = prev
+		opens := *fsOpens
+		s, err := Collect(context.Background(), cat, ident, opts)
+		if err != nil {
+			t.Fatalf("Collect(%s) error = %v", name, err)
+		}
+		if s.FileStatsReused || *fsOpens != opens+1 {
+			t.Errorf("%s: reused/fs opens = %v/%d, want false/%d", name, s.FileStatsReused, *fsOpens, opens+1)
+		}
+	}
+	changed := func(mutate func(*fileStatsKey)) *TableStats {
+		prev := *first
+		mutate(&prev.fileStatsKey)
+		return &prev
+	}
+	recollects("different snapshot", changed(func(k *fileStatsKey) { k.snapshotID++ }), opts)
+	recollects("recreated table", changed(func(k *fileStatsKey) { k.tableUUID = "other" }), opts)
+	smaller := opts
+	smaller.SmallFileBytes++
+	recollects("changed small-file threshold", first, smaller)
+	larger := opts
+	larger.LargeFileBytes++
+	recollects("changed large-file threshold", first, larger)
+	tracked := opts
+	tracked.MaxTrackedPartitions++
+	recollects("changed max tracked partitions", first, tracked)
+	recollects("previous without file stats", &TableStats{}, opts)
 }
