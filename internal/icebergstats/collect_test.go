@@ -415,7 +415,8 @@ func testFileStatsReuse(t *testing.T, cat catalog.Catalog, opts Options, first *
 		t.Errorf("unchanged: reused/fs opens = %v/%d, want true/%d", s.FileStatsReused, *fsOpens, opens)
 	}
 	if s.DataFiles != first.DataFiles || s.DataBytes != first.DataBytes || s.ManifestCount != first.ManifestCount ||
-		s.Partitions != first.Partitions || s.FileSizes.Count != first.FileSizes.Count || !s.FileStatsCollected {
+		s.Partitions != first.Partitions || s.FileSizes.Count != first.FileSizes.Count || !s.FileStatsCollected ||
+		s.PositionDeleteFiles != first.PositionDeleteFiles || s.PositionDeleteFiles == 0 {
 		t.Errorf("unchanged: reused stats differ from the first collection")
 	}
 
