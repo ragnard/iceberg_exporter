@@ -4,13 +4,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,22 +47,82 @@ type CatalogConfig struct {
 	Properties StringMap `yaml:"properties"`
 }
 
-// ScrapeConfig controls discovery and metric collection.
+// ScrapeConfig controls discovery and metric collection. Interval, timeout,
+// concurrency and partition limits apply to the whole refresh; Manifests is
+// the default that each catalog's scrape policy may override.
 type ScrapeConfig struct {
 	Interval    Duration         `yaml:"interval"`
 	Timeout     Duration         `yaml:"timeout"`
 	Concurrency int              `yaml:"concurrency"`
-	Catalogs    []string         `yaml:"catalogs"`
-	Namespaces  Filter           `yaml:"namespaces"`
-	Tables      Filter           `yaml:"tables"`
 	Manifests   ManifestsConfig  `yaml:"manifests"`
 	Partitions  PartitionsConfig `yaml:"partitions"`
+
+	// Catalogs selects the catalogs to scrape and their policies, keyed by
+	// catalog name. When empty, every configured catalog is scraped
+	// without filters.
+	Catalogs map[string]CatalogScrapeConfig `yaml:"catalogs"`
+}
+
+// CatalogScrapeConfig is the scrape policy for one catalog.
+type CatalogScrapeConfig struct {
+	Namespaces Filter            `yaml:"namespaces"`
+	Tables     Filter            `yaml:"tables"`
+	Manifests  ManifestsOverride `yaml:"manifests"`
 }
 
 // ManifestsConfig controls reading manifest entries.
 type ManifestsConfig struct {
 	Enabled     bool `yaml:"enabled"`
 	Concurrency int  `yaml:"concurrency"`
+}
+
+// ManifestsOverride overrides individual ManifestsConfig fields for one
+// catalog; unset fields inherit scrape.manifests.
+type ManifestsOverride struct {
+	Enabled     *bool `yaml:"enabled"`
+	Concurrency *int  `yaml:"concurrency"`
+}
+
+// CatalogScrape is the effective scrape policy for one catalog: filters with
+// defaults applied and manifest settings resolved against scrape.manifests.
+type CatalogScrape struct {
+	Namespaces Filter
+	Tables     Filter
+	Manifests  ManifestsConfig
+}
+
+// ScrapedCatalogs returns the names of the catalogs to scrape, sorted: the
+// keys of scrape.catalogs, or every configured catalog when it is empty.
+func (c *Config) ScrapedCatalogs() []string {
+	if len(c.Scrape.Catalogs) > 0 {
+		return slices.Sorted(maps.Keys(c.Scrape.Catalogs))
+	}
+	return slices.Sorted(maps.Keys(c.Catalogs))
+}
+
+// CatalogScrape returns the effective scrape policy for the named catalog.
+func (c *Config) CatalogScrape(name string) CatalogScrape {
+	sc := c.Scrape.Catalogs[name]
+	out := CatalogScrape{
+		Namespaces: withDefaultInclude(sc.Namespaces),
+		Tables:     withDefaultInclude(sc.Tables),
+		Manifests:  c.Scrape.Manifests,
+	}
+	if sc.Manifests.Enabled != nil {
+		out.Manifests.Enabled = *sc.Manifests.Enabled
+	}
+	if sc.Manifests.Concurrency != nil {
+		out.Manifests.Concurrency = *sc.Manifests.Concurrency
+	}
+	return out
+}
+
+// withDefaultInclude includes everything when no include list is given.
+func withDefaultInclude(f Filter) Filter {
+	if f.Include == nil {
+		f.Include = []string{"**"}
+	}
+	return f
 }
 
 // PartitionsConfig controls partition aggregation.
@@ -312,12 +373,6 @@ func (c *Config) setDefaults() error {
 	if c.Scrape.Concurrency == 0 {
 		c.Scrape.Concurrency = DefaultConcurrency
 	}
-	if c.Scrape.Namespaces.Include == nil {
-		c.Scrape.Namespaces.Include = []string{"**"}
-	}
-	if c.Scrape.Tables.Include == nil {
-		c.Scrape.Tables.Include = []string{"**"}
-	}
 	if c.Scrape.Manifests.Concurrency == 0 {
 		c.Scrape.Manifests.Concurrency = DefaultManifestWorkers
 	}
@@ -356,75 +411,28 @@ func (c *Config) Validate() error {
 	if c.Scrape.Partitions.MaxTracked <= 0 {
 		errs = append(errs, errors.New("scrape.partitions.max_tracked must be greater than zero"))
 	}
-	if err := validateFilter("scrape.namespaces", c.Scrape.Namespaces); err != nil {
-		errs = append(errs, err)
-	}
-	if err := validateFilter("scrape.tables", c.Scrape.Tables); err != nil {
-		errs = append(errs, err)
-	}
-	for _, name := range c.Scrape.Catalogs {
+	for _, name := range slices.Sorted(maps.Keys(c.Scrape.Catalogs)) {
+		prefix := "scrape.catalogs." + name
 		if _, ok := c.Catalogs[name]; !ok {
-			errs = append(errs, fmt.Errorf("scrape.catalogs references unknown catalog %q", name))
+			errs = append(errs, fmt.Errorf("%s: unknown catalog %q", prefix, name))
+		}
+		sc := c.Scrape.Catalogs[name]
+		if err := validateFilter(prefix+".namespaces", sc.Namespaces); err != nil {
+			errs = append(errs, err)
+		}
+		if err := validateFilter(prefix+".tables", sc.Tables); err != nil {
+			errs = append(errs, err)
+		}
+		if n := sc.Manifests.Concurrency; n != nil && *n <= 0 {
+			errs = append(errs, fmt.Errorf("%s.manifests.concurrency must be greater than zero", prefix))
 		}
 	}
 	return errors.Join(errs...)
 }
 
 func validateFilter(prefix string, f Filter) error {
-	var errs []error
-	for _, p := range append(append([]string{}, f.Include...), f.Exclude...) {
-		if !doublestar.ValidatePattern(p) {
-			errs = append(errs, fmt.Errorf("%s: invalid pattern %q", prefix, p))
-		}
+	if _, err := CompileFilter(f); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
 	}
-	return errors.Join(errs...)
-}
-
-// Matcher is a compiled Filter.
-type Matcher struct {
-	include []string
-	exclude []string
-}
-
-// CompileFilter validates and compiles a filter.
-func CompileFilter(f Filter) (*Matcher, error) {
-	m := &Matcher{include: append([]string{}, f.Include...), exclude: append([]string{}, f.Exclude...)}
-	for _, p := range append(append([]string{}, m.include...), m.exclude...) {
-		if !doublestar.ValidatePattern(p) {
-			return nil, fmt.Errorf("invalid pattern %q", p)
-		}
-	}
-	return m, nil
-}
-
-// Match reports whether name is included and not excluded. Patterns match the
-// full dotted namespace or table name; both * and ** may span dots.
-func (m *Matcher) Match(name string) bool {
-	if !m.matchAny(m.include, name) {
-		return false
-	}
-	return !m.matchAny(m.exclude, name)
-}
-
-func (m *Matcher) matchAny(patterns []string, name string) bool {
-	for _, p := range patterns {
-		if matchPattern(p, name) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchPattern(pattern, name string) bool {
-	if ok, err := doublestar.Match(pattern, name); err == nil && ok {
-		return true
-	}
-	// A trailing ".**" is a subtree pattern; make it match the subtree root
-	// too, so "prod.**" includes the "prod" namespace itself.
-	if strings.HasSuffix(pattern, ".**") {
-		if ok, err := doublestar.Match(strings.TrimSuffix(pattern, ".**"), name); err == nil && ok {
-			return true
-		}
-	}
-	return false
+	return nil
 }

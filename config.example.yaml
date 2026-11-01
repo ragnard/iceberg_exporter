@@ -21,20 +21,10 @@ catalogs:
 scrape:
   interval: 5m
   timeout: 4m
-  concurrency: 4
-  # catalogs: [prod]
+  concurrency: 4 # tables collected in parallel, across all catalogs
 
-  namespaces:
-    include: ["**"]
-    exclude:
-      - "tmp.**"
-      - "**.staging"
-
-  tables:
-    include: ["**"]
-    exclude:
-      - "**_staging"
-
+  # Defaults for every catalog; scrape.catalogs.<name>.manifests overrides
+  # individual fields.
   manifests:
     enabled: true
     concurrency: 8
@@ -44,3 +34,20 @@ scrape:
     # this is exceeded; partition distributions become approximate and
     # iceberg_table_partition_tracking_truncated becomes 1.
     max_tracked: 100000
+
+  # Which catalogs to scrape, and how. Omit to scrape every catalog without
+  # filters. When present, only the listed catalogs are scraped; a bare
+  # "name:" or "name: {}" uses the defaults.
+  catalogs:
+    prod:
+      namespaces:
+        include: ["**"]
+        exclude:
+          - "tmp.**"
+          - "**.staging"
+      tables:
+        exclude:
+          - "**_staging"
+      # manifests:
+      #   enabled: false   # metadata-only metrics for this catalog
+      #   concurrency: 16

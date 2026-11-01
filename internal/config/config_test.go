@@ -51,8 +51,11 @@ catalogs:
 	if cfg.Scrape.Concurrency != DefaultConcurrency {
 		t.Errorf("concurrency = %d, want %d", cfg.Scrape.Concurrency, DefaultConcurrency)
 	}
-	if len(cfg.Scrape.Namespaces.Include) != 1 || cfg.Scrape.Namespaces.Include[0] != "**" {
-		t.Errorf("namespace include = %v, want [**]", cfg.Scrape.Namespaces.Include)
+	if got := cfg.ScrapedCatalogs(); len(got) != 1 || got[0] != "prod" {
+		t.Errorf("ScrapedCatalogs() = %v, want [prod]", got)
+	}
+	if got := cfg.CatalogScrape("prod").Namespaces.Include; len(got) != 1 || got[0] != "**" {
+		t.Errorf("namespace include = %v, want [**]", got)
 	}
 	if !cfg.Scrape.Manifests.Enabled {
 		t.Error("manifests.enabled = false, want true by default")
@@ -169,7 +172,8 @@ catalogs:
 catalogs:
   prod: {type: rest, uri: https://example.com}
 scrape:
-  catalogs: [staging]
+  catalogs:
+    staging: {}
 `,
 			wantErr: true,
 		},
@@ -179,8 +183,45 @@ scrape:
 catalogs:
   prod: {type: rest, uri: https://example.com}
 scrape:
+  catalogs:
+    prod:
+      tables:
+        exclude: ["a..b"]
+`,
+			wantErr: true,
+		},
+		{
+			name: "global namespace filter",
+			body: `
+catalogs:
+  prod: {type: rest, uri: https://example.com}
+scrape:
   namespaces:
-    include: ["[bad"]
+    include: ["**"]
+`,
+			wantErr: true,
+		},
+		{
+			name: "zero manifest concurrency override",
+			body: `
+catalogs:
+  prod: {type: rest, uri: https://example.com}
+scrape:
+  catalogs:
+    prod:
+      manifests: {concurrency: 0}
+`,
+			wantErr: true,
+		},
+		{
+			name: "unknown per-catalog key",
+			body: `
+catalogs:
+  prod: {type: rest, uri: https://example.com}
+scrape:
+  catalogs:
+    prod:
+      interval: 1m
 `,
 			wantErr: true,
 		},
@@ -247,17 +288,72 @@ catalogs:
 	}
 }
 
-func TestRemovedFileSizeKeysAreRejected(t *testing.T) {
-	for _, key := range []string{"small_file_bytes", "large_file_bytes", "target_file_size_bytes"} {
-		path := writeConfig(t, `
+func TestPerCatalogScrape(t *testing.T) {
+	path := writeConfig(t, `
 catalogs:
   prod: {type: rest, uri: https://example.com}
+  archive: {type: rest, uri: https://example.com}
+  dev: {type: rest, uri: https://example.com}
 scrape:
-  `+key+`: 1
+  manifests:
+    concurrency: 16
+  catalogs:
+    prod:
+      namespaces:
+        exclude: ["tmp.**"]
+      tables:
+        include: ["sales.**"]
+    archive:
+      manifests:
+        enabled: false
+    dev:
 `)
-		if _, err := Load(path); err == nil {
-			t.Errorf("%s: Load succeeded, want unknown-key error", key)
-		}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.ScrapedCatalogs(); strings.Join(got, ",") != "archive,dev,prod" {
+		t.Errorf("ScrapedCatalogs() = %v, want [archive dev prod]", got)
+	}
+
+	prod := cfg.CatalogScrape("prod")
+	if strings.Join(prod.Namespaces.Include, ",") != "**" || strings.Join(prod.Namespaces.Exclude, ",") != "tmp.**" {
+		t.Errorf("prod namespaces = %+v, want include [**], exclude [tmp.**]", prod.Namespaces)
+	}
+	if strings.Join(prod.Tables.Include, ",") != "sales.**" {
+		t.Errorf("prod tables include = %v, want [sales.**]", prod.Tables.Include)
+	}
+	if !prod.Manifests.Enabled || prod.Manifests.Concurrency != 16 {
+		t.Errorf("prod manifests = %+v, want inherited {true 16}", prod.Manifests)
+	}
+
+	archive := cfg.CatalogScrape("archive")
+	if archive.Manifests.Enabled || archive.Manifests.Concurrency != 16 {
+		t.Errorf("archive manifests = %+v, want {false 16}", archive.Manifests)
+	}
+
+	// A bare key selects the catalog with every default.
+	dev := cfg.CatalogScrape("dev")
+	if strings.Join(dev.Tables.Include, ",") != "**" || !dev.Manifests.Enabled {
+		t.Errorf("dev = %+v, want defaults", dev)
+	}
+}
+
+func TestScrapeCatalogsSubset(t *testing.T) {
+	path := writeConfig(t, `
+catalogs:
+  prod: {type: rest, uri: https://example.com}
+  dev: {type: rest, uri: https://example.com}
+scrape:
+  catalogs:
+    prod: {}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.ScrapedCatalogs(); strings.Join(got, ",") != "prod" {
+		t.Errorf("ScrapedCatalogs() = %v, want [prod]", got)
 	}
 }
 

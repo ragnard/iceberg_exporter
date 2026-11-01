@@ -103,11 +103,10 @@ type State struct {
 // Scraper periodically collects table statistics and keeps the latest value
 // for every table.
 type Scraper struct {
-	cfg          *config.Config
-	log          *slog.Logger
-	catalogs     *Catalogs
-	nsMatcher    *config.Matcher
-	tableMatcher *config.Matcher
+	cfg      *config.Config
+	log      *slog.Logger
+	catalogs *Catalogs
+	policies map[string]catalogPolicy
 
 	state atomic.Pointer[State]
 
@@ -121,26 +120,34 @@ type Scraper struct {
 	onTableError func(catalog string)
 }
 
+// catalogPolicy is a catalog's compiled scrape policy.
+type catalogPolicy struct {
+	namespaces *config.Matcher
+	tables     *config.Matcher
+	manifests  config.ManifestsConfig
+}
+
 // New creates a scraper. The configuration must already be validated.
 func New(cfg *config.Config, log *slog.Logger, catalogs *Catalogs) (*Scraper, error) {
-	nsMatcher, err := config.CompileFilter(cfg.Scrape.Namespaces)
-	if err != nil {
-		return nil, fmt.Errorf("namespace filter: %w", err)
-	}
-	tableMatcher, err := config.CompileFilter(cfg.Scrape.Tables)
-	if err != nil {
-		return nil, fmt.Errorf("table filter: %w", err)
-	}
 	s := &Scraper{
 		cfg:          cfg,
 		log:          log,
 		catalogs:     catalogs,
-		nsMatcher:    nsMatcher,
-		tableMatcher: tableMatcher,
+		policies:     make(map[string]catalogPolicy),
 		results:      make(map[TableKey]TableResult),
 		catalogLocks: make(map[string]*sync.Mutex),
 	}
 	for _, name := range catalogs.Names() {
+		cs := cfg.CatalogScrape(name)
+		ns, err := config.CompileFilter(cs.Namespaces)
+		if err != nil {
+			return nil, fmt.Errorf("catalog %q: namespace filter: %w", name, err)
+		}
+		tables, err := config.CompileFilter(cs.Tables)
+		if err != nil {
+			return nil, fmt.Errorf("catalog %q: table filter: %w", name, err)
+		}
+		s.policies[name] = catalogPolicy{namespaces: ns, tables: tables, manifests: cs.Manifests}
 		s.catalogLocks[name] = &sync.Mutex{}
 	}
 	return s, nil
@@ -301,10 +308,11 @@ func (s *Scraper) loadLock(name string, cat catalog.Catalog) sync.Locker {
 }
 
 func (s *Scraper) optionsFor(catalogName string) icebergstats.Options {
+	manifests := s.policies[catalogName].manifests
 	return icebergstats.Options{
 		Catalog:              catalogName,
-		Manifests:            s.cfg.Scrape.Manifests.Enabled,
-		ManifestConcurrency:  s.cfg.Scrape.Manifests.Concurrency,
+		Manifests:            manifests.Enabled,
+		ManifestConcurrency:  manifests.Concurrency,
 		MaxTrackedPartitions: s.cfg.Scrape.Partitions.MaxTracked,
 	}
 }
@@ -347,6 +355,7 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 		return nil, errors.New("catalog is not loaded")
 	}
 	nested := supportsHierarchy(cat.CatalogType())
+	policy := s.policies[name]
 
 	visited := make(map[string]bool)
 	queue := []table.Identifier{nil}
@@ -364,7 +373,7 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 
 		// Tables always live in a namespace; the root namespace has none.
 		// Listing tables at the root is invalid in several catalogs.
-		if len(ns) > 0 && s.nsMatcher.Match(nsName) {
+		if len(ns) > 0 && policy.namespaces.Match(nsName) {
 			for ident, err := range cat.ListTables(ctx, ns) {
 				if errors.Is(err, catalog.ErrNoSuchNamespace) {
 					// Dropped since it was listed; nothing to collect.
@@ -381,7 +390,7 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 					return refs, fmt.Errorf("catalog returned an empty table identifier in namespace %q", nsName)
 				}
 				fullName := strings.Join(ident, ".")
-				if !s.tableMatcher.Match(fullName) {
+				if !policy.tables.Match(fullName) {
 					continue
 				}
 				refs = append(refs, TableRef{

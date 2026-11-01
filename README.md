@@ -137,20 +137,37 @@ catalogs:
 scrape:
   interval: 5m
   timeout: 4m
-  concurrency: 4          # tables collected in parallel
-  catalogs: [prod]        # optional subset; defaults to all configured
-  namespaces:
-    include: ["**"]
-    exclude: ["tmp.**"]
-  tables:
-    include: ["**"]
-    exclude: ["**_staging"]
-  manifests:
+  concurrency: 4          # tables collected in parallel, across all catalogs
+  manifests:              # defaults; overridable per catalog
     enabled: true
     concurrency: 8        # manifest files read in parallel per table
   partitions:
     max_tracked: 100000   # per-table partition aggregation limit
+  catalogs:               # optional; omitted = every catalog, no filters
+    prod:
+      namespaces:
+        include: ["**"]
+        exclude: ["tmp.**"]
+      tables:
+        exclude: ["**_staging"]
+    staging:
+      manifests:
+        enabled: false    # metadata-only metrics for this catalog
 ```
+
+`scrape.catalogs` selects what is scraped and how, per catalog. When it is
+present, only the listed catalogs are scraped; a bare `name:` or `name: {}`
+uses the defaults. A name that is not defined under `catalogs` is a startup
+error. Each entry can set:
+
+| Key | Default |
+|---|---|
+| `namespaces.include` / `namespaces.exclude` | `["**"]` / none |
+| `tables.include` / `tables.exclude` | `["**"]` / none |
+| `manifests.enabled` / `manifests.concurrency` | `scrape.manifests` (each field inherits separately) |
+
+Interval, timeout, `scrape.concurrency` and `partitions.max_tracked` apply to
+the whole refresh and are not configurable per catalog.
 
 There are no file-size thresholds to configure: small- and large-file counts
 come from the `iceberg_table_file_size_bytes` histogram at query time (see
@@ -164,10 +181,28 @@ are typed from the expanded value. Comments are not expanded. `$$` produces a li
 `$`. Referencing an unset variable is a startup error. Catalog properties are
 never logged.
 
-Filter patterns match the full dotted namespace or table name. `**` spans
-namespace levels, and a trailing `.**` also matches the subtree root:
-`prod.**` matches `prod`, `prod.sales`, and `prod.sales.eu`. Both `*` and `**`
-may span dots; use `**` for clarity. Excludes win over includes.
+Filter patterns match the whole dotted namespace name (`namespaces`) or
+`namespace.table` name (`tables`) within the catalog, without the catalog
+name. `.` separates segments. A name is scraped if it matches an include and
+no exclude.
+
+| Pattern | Matches | Does not match |
+|---|---|---|
+| `*` | `sales` | `sales.eu` |
+| `sales.*` | `sales`, `sales.eu` | `sales.eu.daily` |
+| `sales.**` | `sales`, `sales.eu`, `sales.eu.daily` | `salesx` |
+| `sales.*.orders` | `sales.eu.orders` | `sales.orders`, `sales.eu.daily.orders` |
+| `sales.**.orders` | `sales.orders`, `sales.eu.daily.orders` | |
+| `**.staging` | `staging`, `a.b.staging` | `a.staging_old` |
+| `tmp*` | `tmp`, `tmp_1` | `tmp.x` |
+| `**_staging` | `orders_staging`, `ns.orders_staging` | |
+
+- `*` matches within one segment and never crosses a `.`. As a whole segment
+  it is exactly one segment; a trailing `.*` also matches the parent.
+- `**` as a whole segment is zero or more segments. Inside a segment it
+  matches anything, dots included.
+- Every other character is literal; there is no `?`, `[...]` or `{a,b}`.
+  Empty segments (`a..b`) and `***` are rejected at startup.
 
 `scrape.timeout` applies to one complete refresh. Note that manifest and
 object-store reads inside iceberg-go are not context-aware, so a blocked object
