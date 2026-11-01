@@ -28,6 +28,11 @@ type Options struct {
 	SmallFileBytes       int64
 	LargeFileBytes       int64 // 0 means "2 * target file size"
 	TargetFileBytes      int64
+
+	// LoadLock, if set, is held only while the catalog loads the table.
+	// Use it for catalog clients that are not safe for concurrent use;
+	// manifest reads happen outside the lock.
+	LoadLock sync.Locker
 }
 
 func (o Options) withDefaults() Options {
@@ -50,7 +55,13 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 		return nil, fmt.Errorf("empty table identifier")
 	}
 
+	if opts.LoadLock != nil {
+		opts.LoadLock.Lock()
+	}
 	tbl, err := cat.LoadTable(ctx, ident)
+	if opts.LoadLock != nil {
+		opts.LoadLock.Unlock()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load table: %w", err)
 	}
@@ -96,6 +107,14 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 
 	snap := md.CurrentSnapshot()
 	if snap == nil {
+		// A table without a current snapshot has no files. Report zeros
+		// rather than omitting the file metrics.
+		if opts.Manifests {
+			acc := newAccumulator(opts.MaxTrackedPartitions)
+			acc.unpartitioned = !s.Partitioned
+			acc.finalize(s)
+			s.FileStatsCollected = true
+		}
 		return s, nil
 	}
 	s.HasCurrentSnapshot = true

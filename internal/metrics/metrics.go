@@ -2,7 +2,6 @@
 package metrics
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -38,7 +37,6 @@ type Collector struct {
 	partitioned             *prometheus.Desc
 	schemaCount             *prometheus.Desc
 	partitionSpecCount      *prometheus.Desc
-	currentSnapshotInfo     *prometheus.Desc
 	currentSnapshotTime     *prometheus.Desc
 	currentSnapshotAge      *prometheus.Desc
 	lastUpdatedTime         *prometheus.Desc
@@ -94,7 +92,6 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 		partitioned:             d("partitioned", "1 if the table's current partition spec has fields, 0 otherwise."),
 		schemaCount:             d("schema_count", "Number of schemas in the table metadata."),
 		partitionSpecCount:      d("partition_spec_count", "Number of partition specs in the table metadata."),
-		currentSnapshotInfo:     prometheus.NewDesc("iceberg_table_current_snapshot_info", "Current snapshot ID; always 1.", append(append([]string{}, tableLabels...), "snapshot_id"), nil),
 		currentSnapshotTime:     d("current_snapshot_timestamp_seconds", "Timestamp of the current snapshot."),
 		currentSnapshotAge:      d("current_snapshot_age_seconds", "Age of the current snapshot."),
 		lastUpdatedTime:         d("last_updated_timestamp_seconds", "Time the table metadata was last updated."),
@@ -138,7 +135,7 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 
 	c.descs = []*prometheus.Desc{
 		c.info, c.formatVersion, c.partitioned, c.schemaCount, c.partitionSpecCount,
-		c.currentSnapshotInfo, c.currentSnapshotTime, c.currentSnapshotAge,
+		c.currentSnapshotTime, c.currentSnapshotAge,
 		c.lastUpdatedTime, c.lastUpdatedAge, c.snapshotCount,
 		c.oldestSnapshotTime, c.oldestSnapshotAge, c.refCount,
 		c.lastSequenceNumber, c.targetFileSizeBytes,
@@ -262,8 +259,6 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		tableGauge(c.schemaCount, float64(s.SchemaCount))
 		tableGauge(c.partitionSpecCount, float64(s.PartitionSpecCount))
 		if s.HasCurrentSnapshot {
-			ch <- prometheus.MustNewConstMetric(c.currentSnapshotInfo, prometheus.GaugeValue, 1,
-				append(append([]string{}, labels...), strconv.FormatInt(s.CurrentSnapshotID, 10))...)
 			tableGauge(c.currentSnapshotTime, msToSeconds(s.CurrentSnapshotTimestampMs))
 			tableGauge(c.currentSnapshotAge, ageSeconds(now, s.CurrentSnapshotTimestampMs))
 		}

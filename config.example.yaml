@@ -1,7 +1,8 @@
 # Example configuration for iceberg_exporter.
 #
-# $${VAR} placeholders are expanded from the environment before this file is
-# parsed. Use $$ for a literal dollar sign. Unset variables are an error.
+# ${VAR} placeholders in values are expanded from the environment after the
+# file is parsed, so secrets are taken verbatim. Use $$ for a literal dollar
+# sign. Unset variables are an error. Comments are never expanded.
 
 listen: ":8080"
 log:

@@ -2,10 +2,10 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -105,22 +105,28 @@ func (d Duration) Duration() time.Duration { return time.Duration(d) }
 // the iceberg.Properties type used by iceberg-go.
 type StringMap map[string]string
 
+// Values are taken verbatim from the YAML text, so "0123", "1.0" or "0x10"
+// are not reinterpreted as numbers; a null value becomes "".
 func (m *StringMap) UnmarshalYAML(value *yaml.Node) error {
-	var raw map[string]any
-	if err := value.Decode(&raw); err != nil {
-		return err
+	if value.Kind == yaml.AliasNode && value.Alias != nil {
+		value = value.Alias
 	}
-	out := make(map[string]string, len(raw))
-	for k, v := range raw {
-		switch v := v.(type) {
-		case nil:
-			out[k] = ""
-		case string:
-			out[k] = v
-		case bool, int, int64, uint64, float64:
-			out[k] = fmt.Sprint(v)
-		default:
-			return fmt.Errorf("property %q must be a scalar value", k)
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: properties must be a mapping", value.Line)
+	}
+	out := make(map[string]string, len(value.Content)/2)
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k, v := value.Content[i], value.Content[i+1]
+		if v.Kind == yaml.AliasNode && v.Alias != nil {
+			v = v.Alias
+		}
+		if k.Kind != yaml.ScalarNode || v.Kind != yaml.ScalarNode {
+			return fmt.Errorf("line %d: property %q must be a scalar value", k.Line, k.Value)
+		}
+		if v.ShortTag() == "!!null" {
+			out[k.Value] = ""
+		} else {
+			out[k.Value] = v.Value
 		}
 	}
 	*m = out
@@ -129,24 +135,114 @@ func (m *StringMap) UnmarshalYAML(value *yaml.Node) error {
 
 var envPlaceholder = regexp.MustCompile(`\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-func expandEnv(data []byte) ([]byte, error) {
+// expandEnv expands ${VAR} placeholders inside the scalars of a parsed YAML
+// document. Expanding after parsing means a value can never change the
+// document structure: a secret containing " #", ": ", quotes or newlines is
+// taken verbatim. Comments are not expanded.
+func expandEnv(root *yaml.Node) error {
 	var missing []string
-	out := envPlaceholder.ReplaceAllFunc(data, func(match []byte) []byte {
-		if string(match) == "$$" {
-			return []byte("$")
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		if n.Kind == yaml.ScalarNode && envPlaceholder.MatchString(n.Value) {
+			n.Value = envPlaceholder.ReplaceAllStringFunc(n.Value, func(match string) string {
+				if match == "$$" {
+					return "$"
+				}
+				name := match[2 : len(match)-1]
+				value, ok := os.LookupEnv(name)
+				if !ok {
+					missing = append(missing, name)
+				}
+				return value
+			})
+			// A plain, untagged scalar was typed from its placeholder text
+			// (always a string). Clear the tag so it is re-resolved from the
+			// expanded value, letting "concurrency: ${N}" decode as an int.
+			// Quoted and explicitly tagged scalars stay strings.
+			if n.Style == 0 {
+				n.Tag = ""
+			}
 		}
-		name := string(match[2 : len(match)-1])
-		value, ok := os.LookupEnv(name)
-		if !ok {
-			missing = append(missing, name)
+		// Aliases share their anchor's node, which is expanded where it is
+		// defined; following them would expand it twice.
+		for _, c := range n.Content {
+			walk(c)
+		}
+	}
+	walk(root)
+	if len(missing) > 0 {
+		return fmt.Errorf("unset environment variable(s): %s", strings.Join(uniqueStrings(missing), ", "))
+	}
+	return nil
+}
+
+var unmarshalerType = reflect.TypeFor[yaml.Unmarshaler]()
+
+// checkKnownFields rejects mapping keys that do not correspond to a field of
+// the target struct, recursively. yaml.Node.Decode has no KnownFields option,
+// so this restores strict decoding while keeping the original line numbers.
+// Type mismatches are left to Decode to report.
+func checkKnownFields(n *yaml.Node, t reflect.Type) error {
+	for n.Kind == yaml.DocumentNode && len(n.Content) == 1 {
+		n = n.Content[0]
+	}
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if reflect.PointerTo(t).Implements(unmarshalerType) {
+		return nil
+	}
+
+	var errs []error
+	switch t.Kind() {
+	case reflect.Struct:
+		if n.Kind != yaml.MappingNode {
 			return nil
 		}
-		return []byte(value)
-	})
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("unset environment variable(s): %s", strings.Join(uniqueStrings(missing), ", "))
+		fields := make(map[string]reflect.Type, t.NumField())
+		for i := range t.NumField() {
+			f := t.Field(i)
+			name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+			if name == "-" || !f.IsExported() {
+				continue
+			}
+			if name == "" {
+				name = strings.ToLower(f.Name)
+			}
+			fields[name] = f.Type
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			if k.ShortTag() == "!!merge" {
+				errs = append(errs, checkKnownFields(v, t))
+				continue
+			}
+			ft, ok := fields[k.Value]
+			if !ok {
+				errs = append(errs, fmt.Errorf("line %d: field %s not found in type %s", k.Line, k.Value, t))
+				continue
+			}
+			errs = append(errs, checkKnownFields(v, ft))
+		}
+	case reflect.Map:
+		if n.Kind != yaml.MappingNode {
+			return nil
+		}
+		for i := 1; i < len(n.Content); i += 2 {
+			errs = append(errs, checkKnownFields(n.Content[i], t.Elem()))
+		}
+	case reflect.Slice, reflect.Array:
+		if n.Kind != yaml.SequenceNode {
+			return nil
+		}
+		for _, c := range n.Content {
+			errs = append(errs, checkKnownFields(c, t.Elem()))
+		}
 	}
-	return out, nil
+	return errors.Join(errs...)
 }
 
 func uniqueStrings(in []string) []string {
@@ -169,12 +265,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	// Supports ${VAR} placeholders in the file, which is handy for
-	// credentials. "$$" is an escaped literal dollar sign. Unset variables
-	// are an error rather than silently becoming empty.
-	expanded, err := expandEnv(data)
-	if err != nil {
-		return nil, err
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
 	var cfg = Config{
@@ -184,10 +277,19 @@ func Load(path string) (*Config, error) {
 			TargetFileBytes: DefaultTargetFileBytes,
 		},
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(expanded))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+	if root.Kind != 0 { // an empty file leaves the zero node
+		// ${VAR} placeholders are handy for credentials. "$$" is an escaped
+		// literal dollar sign. Unset variables are an error rather than
+		// silently becoming empty.
+		if err := expandEnv(&root); err != nil {
+			return nil, err
+		}
+		if err := checkKnownFields(&root, reflect.TypeFor[Config]()); err != nil {
+			return nil, fmt.Errorf("parse config: %w", err)
+		}
+		if err := root.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("parse config: %w", err)
+		}
 	}
 	if err := cfg.setDefaults(); err != nil {
 		return nil, err

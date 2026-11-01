@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,72 @@ catalogs:
 `)
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load() succeeded with an unknown field")
+	}
+
+	// Nested typos are rejected too, with the line of the offending key.
+	path = writeConfig(t, `catalogs:
+  prod:
+    type: rest
+    uri: https://catalog.example.com
+scrape:
+  manifests:
+    enabeld: false
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "line 7: field enabeld not found") {
+		t.Fatalf("Load() error = %v, want unknown field enabeld on line 7", err)
+	}
+}
+
+func TestEnvExpansionIsStructureSafe(t *testing.T) {
+	for _, secret := range []string{
+		"abc #def",
+		"key: value",
+		`has "quotes" and \backslash`,
+		"*starts-with-star",
+		"&anchor",
+		"line1\nline2: injected",
+		"0123",
+		"true",
+	} {
+		t.Run(secret, func(t *testing.T) {
+			t.Setenv("SECRET", secret)
+			t.Setenv("WORKERS", "3")
+			cfg, err := Load(writeConfig(t, `
+catalogs:
+  prod:
+    type: rest
+    uri: https://example.com
+    credential: ${SECRET}
+    properties:
+      plain: ${SECRET}
+      quoted: "${SECRET}"
+      literal: 0123
+scrape:
+  concurrency: ${WORKERS}  # comments with ${UNSET_IN_COMMENT} are not expanded
+`))
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			cat := cfg.Catalogs["prod"]
+			if cat.Credential != secret {
+				t.Errorf("credential = %q, want %q", cat.Credential, secret)
+			}
+			for _, key := range []string{"plain", "quoted"} {
+				if got := cat.Properties[key]; got != secret {
+					t.Errorf("property %s = %q, want %q", key, got, secret)
+				}
+			}
+			if got := cat.Properties["literal"]; got != "0123" {
+				t.Errorf("literal property = %q, want verbatim 0123", got)
+			}
+			if len(cat.Properties) != 3 {
+				t.Errorf("properties = %v, want exactly plain/quoted/literal", cat.Properties)
+			}
+			if cfg.Scrape.Concurrency != 3 {
+				t.Errorf("concurrency = %d, want 3 from the environment", cfg.Scrape.Concurrency)
+			}
+		})
 	}
 }
 

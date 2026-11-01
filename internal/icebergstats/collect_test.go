@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,19 +191,39 @@ func TestCollectMetadataOnly(t *testing.T) {
 	if s.HasCurrentSnapshot {
 		t.Error("HasCurrentSnapshot = true, want false")
 	}
+	// Without a snapshot the table has no files: file metrics are zero,
+	// not missing, and the implicit partition still counts.
+	if !s.FileStatsCollected {
+		t.Error("FileStatsCollected = false, want true (zeros) without a snapshot")
+	}
+	if s.DataFiles != 0 || s.DataBytes != 0 || s.ManifestCount != 0 || s.FileSizes.Count != 0 {
+		t.Errorf("file totals = %d/%d/%d/%d, want zeros", s.DataFiles, s.DataBytes, s.ManifestCount, s.FileSizes.Count)
+	}
+	if s.Partitions != 1 {
+		t.Errorf("Partitions = %d, want 1 for an unpartitioned table", s.Partitions)
+	}
+
+	s, err = Collect(context.Background(), cat, table.Identifier{"db", "tbl"}, Options{Manifests: false})
+	if err != nil {
+		t.Fatalf("Collect(manifests disabled) error = %v", err)
+	}
 	if s.FileStatsCollected {
-		t.Error("FileStatsCollected = true, want false without a snapshot")
+		t.Error("FileStatsCollected = true with manifests disabled")
 	}
 }
 
 type fakeCatalog struct {
 	catalog.Catalog
-	tbl *table.Table
+	tbl    *table.Table
+	onLoad func()
 }
 
 func (f *fakeCatalog) CatalogType() catalog.Type { return catalog.REST }
 
 func (f *fakeCatalog) LoadTable(context.Context, table.Identifier) (*table.Table, error) {
+	if f.onLoad != nil {
+		f.onLoad()
+	}
 	return f.tbl, nil
 }
 
@@ -312,9 +333,24 @@ func TestCollectWithManifests(t *testing.T) {
 		}
 	}
 
+	// The load lock must be held during LoadTable and released before the
+	// table filesystem is opened for manifest reads.
+	var loadLock sync.Mutex
+	var heldDuringLoad, heldDuringFS bool
 	tbl := table.New(table.Identifier{"db", "tbl"}, md, "mem://bucket/metadata.json",
-		func(context.Context) (icebergio.IO, error) { return mem, nil }, nil)
-	cat := &fakeCatalog{tbl: tbl}
+		func(context.Context) (icebergio.IO, error) {
+			heldDuringFS = !loadLock.TryLock()
+			if !heldDuringFS {
+				loadLock.Unlock()
+			}
+			return mem, nil
+		}, nil)
+	cat := &fakeCatalog{tbl: tbl, onLoad: func() {
+		heldDuringLoad = !loadLock.TryLock()
+		if !heldDuringLoad {
+			loadLock.Unlock()
+		}
+	}}
 
 	s, err := Collect(context.Background(), cat, table.Identifier{"db", "tbl"}, Options{
 		Catalog:              "prod",
@@ -323,9 +359,13 @@ func TestCollectWithManifests(t *testing.T) {
 		MaxTrackedPartitions: 100,
 		SmallFileBytes:       150,
 		LargeFileBytes:       250,
+		LoadLock:             &loadLock,
 	})
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
+	}
+	if !heldDuringLoad || heldDuringFS {
+		t.Errorf("load lock held during load/fs = %v/%v, want true/false", heldDuringLoad, heldDuringFS)
 	}
 	if !s.FileStatsCollected || s.ManifestCount != 2 {
 		t.Errorf("file stats collected/manifests = %v/%d, want true/2", s.FileStatsCollected, s.ManifestCount)

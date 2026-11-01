@@ -6,6 +6,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -42,6 +43,11 @@ type fakeCatalog struct {
 	fail              map[string]bool
 	listNamespacesErr error
 	tbl               *table.Table
+	// children maps a dotted parent namespace to what ListNamespaces
+	// returns for it; missing namespaces return ErrNoSuchNamespace.
+	children map[string][]table.Identifier
+	missing  map[string]bool
+	listed   []string // parents passed to ListNamespaces
 }
 
 func (f *fakeCatalog) CatalogType() catalog.Type { return catalog.REST }
@@ -49,21 +55,30 @@ func (f *fakeCatalog) CatalogType() catalog.Type { return catalog.REST }
 func (f *fakeCatalog) ListNamespaces(_ context.Context, parent table.Identifier) ([]table.Identifier, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listed = append(f.listed, joinIdent(parent))
 	if f.listNamespacesErr != nil {
 		return nil, f.listNamespacesErr
+	}
+	if f.missing[joinIdent(parent)] {
+		return nil, catalog.ErrNoSuchNamespace
 	}
 	if len(parent) == 0 {
 		return f.namespaces, nil
 	}
-	return nil, nil
+	return f.children[joinIdent(parent)], nil
 }
 
 func (f *fakeCatalog) ListTables(_ context.Context, ns table.Identifier) iter.Seq2[table.Identifier, error] {
 	key := joinIdent(ns)
 	f.mu.Lock()
 	idents := append([]table.Identifier(nil), f.tables[key]...)
+	missing := f.missing[key]
 	f.mu.Unlock()
 	return func(yield func(table.Identifier, error) bool) {
+		if missing {
+			yield(nil, catalog.ErrNoSuchNamespace)
+			return
+		}
 		for _, ident := range idents {
 			if !yield(ident, nil) {
 				return
@@ -139,10 +154,6 @@ func TestDiscoverAndFilter(t *testing.T) {
 	var errorsSeen int
 	s.SetTableErrorObserver(func(string) { errorsSeen++ })
 
-	if s.Ready() {
-		t.Error("Ready() = true before the first refresh")
-	}
-
 	s.Refresh(context.Background())
 	st := s.State()
 	if st == nil {
@@ -163,9 +174,6 @@ func TestDiscoverAndFilter(t *testing.T) {
 	}
 	if errorsSeen != 0 {
 		t.Errorf("table error observer called %d times, want 0", errorsSeen)
-	}
-	if !s.Ready() {
-		t.Error("Ready() = false after a successful refresh")
 	}
 }
 
@@ -269,5 +277,79 @@ func TestDiscoveryFailureRetainsTables(t *testing.T) {
 	}
 	if st.Discovered != 1 {
 		t.Errorf("Discovered = %d, want the previous table to be retained", st.Discovered)
+	}
+}
+
+func discoveredNames(t *testing.T, s *Scraper) []string {
+	t.Helper()
+	refs, errs := s.discover(context.Background())
+	if len(errs) > 0 {
+		t.Fatalf("discover() errors = %v", errs)
+	}
+	var out []string
+	for _, ref := range refs {
+		out = append(out, ref.FullName())
+	}
+	return out
+}
+
+func TestDiscoverNestedNamespaces(t *testing.T) {
+	tables := map[string][]table.Identifier{
+		"a":     {{"a", "t"}},
+		"a.b":   {{"a", "b", "t"}},
+		"a.b.c": {{"a", "b", "c", "t"}},
+		"x":     {{"x", "t"}},
+	}
+	want := []string{"a.t", "a.b.t", "a.b.c.t", "x.t"}
+
+	cases := map[string]map[string][]table.Identifier{
+		// REST: full identifiers of direct children.
+		"direct children": {
+			"a":   {{"a", "b"}},
+			"a.b": {{"a", "b", "c"}},
+		},
+		// SQL: the parent itself plus descendants at every depth.
+		"parent and all descendants": {
+			"a":     {{"a"}, {"a", "b"}, {"a", "b", "c"}},
+			"a.b":   {{"a", "b"}, {"a", "b", "c"}},
+			"a.b.c": {{"a", "b", "c"}},
+		},
+		// A server that ignores the parent parameter must not cause
+		// recursion into bogus namespaces such as a.a.
+		"parent ignored": {
+			"a":     {{"a"}, {"x"}, {"a", "b"}},
+			"a.b":   {{"a"}, {"x"}, {"a", "b", "c"}},
+			"a.b.c": {{"a"}, {"x"}},
+			"x":     {{"a"}, {"x"}},
+		},
+	}
+	for name, children := range cases {
+		t.Run(name, func(t *testing.T) {
+			fc := &fakeCatalog{
+				namespaces: []table.Identifier{{"a"}, {"x"}},
+				tables:     tables,
+				children:   children,
+			}
+			got := discoveredNames(t, newTestScraper(t, testConfig(), fc))
+			if !slices.Equal(got, want) {
+				t.Errorf("discovered = %v, want %v", got, want)
+			}
+			listed := slices.Sorted(slices.Values(fc.listed))
+			if wantListed := []string{"", "a", "a.b", "a.b.c", "x"}; !slices.Equal(listed, wantListed) {
+				t.Errorf("listed namespaces = %q, want %q", listed, wantListed)
+			}
+		})
+	}
+}
+
+func TestDiscoverToleratesVanishedNamespace(t *testing.T) {
+	fc := &fakeCatalog{
+		namespaces: []table.Identifier{{"gone"}, {"ns"}},
+		tables:     map[string][]table.Identifier{"ns": {{"ns", "t1"}}},
+		missing:    map[string]bool{"gone": true},
+	}
+	got := discoveredNames(t, newTestScraper(t, testConfig(), fc))
+	if want := []string{"ns.t1"}; !slices.Equal(got, want) {
+		t.Errorf("discovered = %v, want %v", got, want)
 	}
 }

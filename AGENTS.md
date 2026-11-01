@@ -37,22 +37,22 @@ When adding a backend: add a tagged blank-import file in `internal/registry/`, k
 - `internal/scrape`: discovery, refresh scheduling, table state. `Refresh` is serialized by `refreshMu`; `State` is immutable after `atomic.Pointer.Store`.
 - `internal/icebergstats`: metadata + manifest scanning into plain values. `Collect` reads only the current snapshot and uses `Entries(fs, true)` so deleted entries are excluded.
 - `internal/metrics`: renders `scrape.State` on each Prometheus scrape. Do not call catalogs/object stores from `Collect`; `/metrics` must stay cache-only.
-- Hive catalog table loads are serialized via `Scraper.lockCatalog` because its Thrift client is not concurrency-safe. Keep that path if changing table workers.
+- Hive catalog table loads are serialized via `Scraper.loadLock` → `icebergstats.Options.LoadLock` because its Thrift client is not concurrency-safe. The lock covers only `LoadTable`; manifest reads must stay outside it. Keep that path if changing table workers.
 - Table/manifest reads are concurrent; totals are guarded by a mutex in `accumulator`. Partition state is bounded by `scrape.partitions.max_tracked` (totals stay exact; distributions truncate).
-- Failure semantics: a failed table keeps its previous `Stats` and sets `iceberg_table_scrape_success=0`; tables disappear only on successful discovery; `iceberg_exporter_scrape_success` reflects discovery only. `/readyz` requires a fully successful refresh within `2 × interval`.
+- Failure semantics: a failed table keeps its previous `Stats` and sets `iceberg_table_scrape_success=0`; tables disappear only on successful discovery; `iceberg_exporter_scrape_success` reflects discovery only. `/healthz` and `/readyz` reflect only the process and must not depend on catalog or scrape success.
 
 ## Domain decisions
 
 - Partition support is intentionally **Layer 1 only**: distribution histograms and max/avg, no `partition` label, no partition-age buckets, no top-N/debug endpoint. Discuss before adding.
 - Unpartitioned tables report `iceberg_table_partitions=1` (implicit partition); `partitioned` counts only non-void spec fields.
-- Snapshot IDs are exposed as the `snapshot_id` label on `iceberg_table_current_snapshot_info`, not as a numeric gauge (int64 precision).
+- Do not expose snapshot IDs (as labels or gauges): a label creates a new series per commit and int64 IDs lose precision as floats.
 - Keep Prometheus units `_seconds`; metric names/descriptors live only in `internal/metrics/metrics.go`.
 - Histograms use cumulative buckets from `icebergstats.Histogram`; do not hand-build `le` values.
 - Summary bytes are all file bytes (including delete files); `data_records` is records in live data files before deletes are applied.
 
 ## Gotchas
 
-- Config uses `yaml.Decoder.KnownFields(true)`: typos fail. Only `${VAR}` placeholders are expanded (`$$` = literal `$`); unset variables are errors. Expansion applies to the whole file, so escape placeholders in comments as `$${VAR}`.
+- Config is parsed to a `yaml.Node`, `${VAR}` placeholders are expanded inside scalars only (`$$` = literal `$`; unset variables are errors; comments are not expanded), then decoded. `yaml.Node.Decode` has no `KnownFields`, so `checkKnownFields` enforces strict keys: typos fail. Keep it working if you add custom-unmarshaled config types.
 - Never log catalog `properties` or credentials.
 - `scrape.timeout` cannot interrupt iceberg-go manifest/object-store reads (APIs are not context-aware); only context-aware work and per-entry checks are cancellable.
 - Dotted namespace/table labels can collide for exotic namespace components. Internal keys are length-prefixed and collision-free; the collector skips duplicate label sets and reports `iceberg_exporter_duplicate_table_labels` rather than failing the scrape.

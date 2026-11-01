@@ -110,11 +110,9 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// Probes reflect only the exporter process. Catalog and scrape failures
+	// are reported through metrics, not by failing readiness.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if !scraper.Ready() {
-			http.Error(w, "no recent successful refresh", http.StatusServiceUnavailable)
-			return
-		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready\n"))
 	})

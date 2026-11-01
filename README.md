@@ -91,8 +91,11 @@ Endpoints:
 
 - `/metrics` — Prometheus metrics
 - `/healthz` — liveness; always 200 while the process is up
-- `/readyz` — 200 after a fully successful refresh within the last
-  `2 × scrape.interval`, otherwise 503
+- `/readyz` — readiness; always 200 while the HTTP server is serving
+
+Neither probe depends on catalog or scrape health: an unreachable catalog is
+reported through `iceberg_exporter_scrape_success` and
+`iceberg_table_scrape_success`, not by taking the exporter out of service.
 
 ## Configuration
 
@@ -137,8 +140,11 @@ scrape:
   target_file_size_bytes: 536870912  # fallback when the table has no property
 ```
 
-`${VAR}` placeholders are expanded from the environment before YAML parsing,
-so credentials do not need to be stored in the file. `$$` produces a literal
+`${VAR}` placeholders inside YAML values are expanded from the environment
+after parsing, so credentials do not need to be stored in the file and are
+taken verbatim (characters such as ` #`, `:` or quotes cannot change the
+document). Quote a placeholder (`"${VAR}"`) to force a string; unquoted ones
+are typed from the expanded value. Comments are not expanded. `$$` produces a literal
 `$`. Referencing an unset variable is a startup error. Catalog properties are
 never logged.
 
@@ -156,8 +162,9 @@ failure is logged at warn level. Tables that disappear from the catalog are
 removed on the next successful discovery.
 
 Hive catalog table loads are serialized internally because the Hive Thrift
-client is not safe for concurrent use. Other catalog types load tables up to
-`scrape.concurrency` at a time.
+client is not safe for concurrent use. Only the table load (metastore lookup
+and metadata file read) is serialized; manifest reads for Hive tables still run up to
+`scrape.concurrency` tables at a time, like every other catalog type.
 
 ## Metrics
 
@@ -172,7 +179,6 @@ Common labels: `catalog`, `namespace`, `table`.
 | `iceberg_table_partitioned` | 1 if the current spec has partition fields |
 | `iceberg_table_schema_count` | Number of schemas |
 | `iceberg_table_partition_spec_count` | Number of partition specs |
-| `iceberg_table_current_snapshot_info` | Current snapshot ID, exposed as a `snapshot_id` label |
 | `iceberg_table_current_snapshot_timestamp_seconds` | Current snapshot time |
 | `iceberg_table_current_snapshot_age_seconds` | Age of the current snapshot |
 | `iceberg_table_last_updated_timestamp_seconds` | Last metadata update |

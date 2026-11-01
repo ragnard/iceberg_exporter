@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,8 +95,7 @@ type Scraper struct {
 
 	state atomic.Pointer[State]
 
-	refreshMu   sync.Mutex
-	lastSuccess atomic.Int64
+	refreshMu sync.Mutex
 
 	// results is only touched while refreshMu is held.
 	results map[TableKey]TableResult
@@ -136,15 +136,6 @@ func (s *Scraper) SetTableErrorObserver(fn func(catalog string)) { s.onTableErro
 // State returns the latest refresh state, or nil before the first refresh.
 func (s *Scraper) State() *State { return s.state.Load() }
 
-// Ready reports whether a fully successful refresh completed recently enough.
-func (s *Scraper) Ready() bool {
-	last := s.lastSuccess.Load()
-	if last == 0 {
-		return false
-	}
-	return time.Since(time.Unix(0, last)) <= 2*s.cfg.Scrape.Interval.Duration()
-}
-
 // Run refreshes immediately and then on the configured interval until the
 // context is cancelled. Refreshes never overlap.
 func (s *Scraper) Run(ctx context.Context) {
@@ -183,9 +174,9 @@ func (s *Scraper) Refresh(ctx context.Context) {
 		ref := ref
 		g.Go(func() error {
 			cat := s.catalogFor(ref.Catalog)
-			unlock := s.lockCatalog(ref.Catalog, cat)
-			stats, err := icebergstats.Collect(gctx, cat, ref.Identifier, s.optionsFor(ref.Catalog))
-			unlock()
+			opts := s.optionsFor(ref.Catalog)
+			opts.LoadLock = s.loadLock(ref.Catalog, cat)
+			stats, err := icebergstats.Collect(gctx, cat, ref.Identifier, opts)
 			now := time.Now()
 
 			mu.Lock()
@@ -250,9 +241,6 @@ func (s *Scraper) Refresh(ctx context.Context) {
 		Tables:          tables,
 	}
 	s.state.Store(st)
-	if st.Success {
-		s.lastSuccess.Store(finished.UnixNano())
-	}
 
 	log := s.log.With(
 		"duration", st.Duration.Round(time.Millisecond),
@@ -276,19 +264,18 @@ func (s *Scraper) catalogFor(name string) catalog.Catalog {
 	return cat
 }
 
-// lockCatalog serializes table loads for catalogs whose clients are not safe
-// for concurrent use. The Hive metastore client shares a single Thrift
-// transport and is not goroutine-safe.
-func (s *Scraper) lockCatalog(name string, cat catalog.Catalog) func() {
+// loadLock returns the lock that serializes table loads for catalogs whose
+// clients are not safe for concurrent use, or nil. The Hive metastore client
+// shares a single Thrift transport and is not goroutine-safe. Only the
+// catalog call is serialized; manifest reads stay concurrent.
+func (s *Scraper) loadLock(name string, cat catalog.Catalog) sync.Locker {
 	if cat == nil || cat.CatalogType() != catalog.Hive {
-		return func() {}
+		return nil
 	}
-	mu := s.catalogLocks[name]
-	if mu == nil {
-		return func() {}
+	if mu := s.catalogLocks[name]; mu != nil {
+		return mu
 	}
-	mu.Lock()
-	return mu.Unlock
+	return nil
 }
 
 func (s *Scraper) optionsFor(catalogName string) icebergstats.Options {
@@ -365,6 +352,11 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 		// Listing tables at the root is invalid in several catalogs.
 		if len(ns) > 0 && s.nsMatcher.Match(nsName) {
 			for ident, err := range cat.ListTables(ctx, ns) {
+				if errors.Is(err, catalog.ErrNoSuchNamespace) {
+					// Dropped since it was listed; nothing to collect.
+					s.log.Debug("namespace disappeared during discovery", "catalog", name, "namespace", nsName)
+					break
+				}
 				if err != nil {
 					return refs, fmt.Errorf("list tables in namespace %q: %w", nsName, err)
 				}
@@ -395,10 +387,16 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 			if err := ctx.Err(); err != nil {
 				return refs, err
 			}
+			if len(ns) > 0 && errors.Is(err, catalog.ErrNoSuchNamespace) {
+				s.log.Debug("namespace disappeared during discovery", "catalog", name, "namespace", nsName)
+				continue
+			}
 			return refs, fmt.Errorf("list namespaces under %q: %w", nsName, err)
 		}
 		for _, child := range children {
-			queue = append(queue, normalizeChild(ns, child))
+			if isDescendant(ns, child) {
+				queue = append(queue, append(table.Identifier(nil), child...))
+			}
 		}
 	}
 	return refs, nil
@@ -413,27 +411,14 @@ func supportsHierarchy(t catalog.Type) bool {
 	}
 }
 
-// normalizeChild makes sure a child identifier returned by a catalog includes
-// its parent path. All built-in catalogs currently return full identifiers, but
-// being defensive costs little.
-func normalizeChild(parent, child table.Identifier) table.Identifier {
-	if len(parent) == 0 || len(child) > len(parent) && equalPrefix(parent, child) {
-		return child
-	}
-	out := make(table.Identifier, 0, len(parent)+len(child))
-	out = append(out, parent...)
-	out = append(out, child...)
-	return out
-}
-
-func equalPrefix(prefix, values table.Identifier) bool {
-	if len(values) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if prefix[i] != values[i] {
-			return false
-		}
-	}
-	return true
+// isDescendant reports whether child is a namespace strictly below parent.
+//
+// Catalogs return full namespace identifiers, but they differ in what a
+// listing under parent contains: REST returns direct children, SQL returns
+// parent itself plus descendants at any depth, and a REST server without
+// nested-namespace support may ignore parent and return top-level
+// namespaces. Keeping only strict descendants handles all of them; deeper
+// descendants are deduplicated by the traversal's visited set.
+func isDescendant(parent, child table.Identifier) bool {
+	return len(child) > len(parent) && slices.Equal(child[:len(parent)], parent)
 }
