@@ -56,6 +56,26 @@ with a message naming the missing build tag.
 
 MySQL needs no extra tag: the SQL catalog package registers the MySQL driver.
 
+### Docker
+
+```bash
+docker build -t iceberg_exporter .
+docker build --build-arg TAGS="glue gcs" -t iceberg_exporter .
+make docker
+```
+
+The image is a multi-stage build: `golang:1.27.3` compiles a static binary and
+`gcr.io/distroless/static-debian13:nonroot` runs it as a non-root user. The
+default `TAGS` is empty, so the image contains only REST, Hive and S3.
+
+The image expects the config at `/etc/iceberg_exporter/config.yaml`:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/config.yaml:/etc/iceberg_exporter/config.yaml:ro" \
+  iceberg_exporter
+```
+
 ## Run
 
 ```bash

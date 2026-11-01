@@ -1,17 +1,25 @@
 BINARY  ?= iceberg_exporter
+IMAGE   ?= iceberg_exporter
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 REVISION?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 TAGS    ?=
 LDFLAGS  = -s -w -X main.version=$(VERSION) -X main.revision=$(REVISION)
 ALL_TAGS = glue sql hadoop gcs azure sqlpgx sqlsqlite
 
-.PHONY: build build-full test test-race test-all-tags vet vet-all-tags tidy clean
+.PHONY: build build-full docker test test-race test-all-tags vet vet-all-tags tidy clean
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -tags "$(TAGS)" -o $(BINARY) ./cmd/iceberg_exporter
 
 build-full:
 	go build -trimpath -ldflags "$(LDFLAGS)" -tags "$(ALL_TAGS)" -o $(BINARY) ./cmd/iceberg_exporter
+
+docker:
+	docker build \
+		--build-arg TAGS="$(TAGS)" \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg REVISION="$(REVISION)" \
+		-t $(IMAGE) .
 
 test:
 	go test ./...

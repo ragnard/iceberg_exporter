@@ -15,6 +15,7 @@ gofmt -w cmd internal
 ```
 
 - There is no CI. `make test-all-tags` is the only check that compiles `//go:build` files.
+- `make docker` forwards `TAGS`/`VERSION` to a multi-stage `golang:1.27.3` -> distroless Debian 13 image; it builds with `CGO_ENABLED=0` and runs as nonroot with config expected at `/etc/iceberg_exporter/config.yaml`.
 - `go mod tidy` considers tagged files, so pgx/sqlite/cloud SDKs stay in `go.mod` even though they are not in the default binary.
 
 ## Build tags are load-bearing
