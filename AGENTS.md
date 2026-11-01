@@ -14,7 +14,9 @@ make vet-all-tags
 gofmt -w cmd internal
 ```
 
-- There is no CI. `make test-all-tags` is the only check that compiles `//go:build` files.
+- CI (`.github/workflows/ci.yml`) runs gofmt, `make vet-all-tags`, `make test-all-tags` and `make build`. `make test-all-tags` is the only check that compiles `//go:build` files, so run it locally too.
+- `.github/workflows/docker.yml` publishes multi-arch images to `ghcr.io/ragnard/iceberg_exporter` (default and `-full`) on `main` and `v*` tags; PRs build without pushing. Its `full` matrix entry duplicates `ALL_TAGS`, so keep the two in sync.
+- Workflows are audited by zizmor (`zizmor.yml`). Pin every action to a full commit SHA with a `# vX.Y.Z` comment, keep top-level `permissions: {}` with per-job grants, and use `persist-credentials: false` on checkout. Dependabot bumps the pins.
 - `make docker` forwards `TAGS`/`VERSION` to a multi-stage `golang:1.27.3` -> distroless Debian 13 image; it builds with `CGO_ENABLED=0` and runs as nonroot with config expected at `/etc/iceberg_exporter/config.yaml`.
 - `go mod tidy` considers tagged files, so pgx/sqlite/cloud SDKs stay in `go.mod` even though they are not in the default binary.
 
@@ -30,7 +32,7 @@ Default binary: REST catalog, Hive catalog, S3 object store (`internal/registry/
 | GCS / Azure storage | `gcs` / `azure` |
 | pgx / SQLite SQL drivers | `sql sqlpgx` / `sql sqlsqlite` |
 
-When adding a backend: add a tagged blank-import file in `internal/registry/`, keep `registry.CatalogTypes()`/`ObjectStoreSchemes()` honest, and update `ALL_TAGS` in the `Makefile` plus the README table. Untagged imports change the default binary and break the lean-build guarantee.
+When adding a backend: add a tagged blank-import file in `internal/registry/`, keep `registry.CatalogTypes()`/`ObjectStoreSchemes()` honest, and update `ALL_TAGS` in the `Makefile`, the `full` variant in `.github/workflows/docker.yml`, plus the README table. Untagged imports change the default binary and break the lean-build guarantee.
 
 ## Architecture and invariants
 

@@ -58,6 +58,21 @@ MySQL needs no extra tag: the SQL catalog package registers the MySQL driver.
 
 ### Docker
 
+Prebuilt multi-arch (`linux/amd64`, `linux/arm64`) images are published to
+GHCR by the `Docker` workflow:
+
+| Tag | Contents |
+|---|---|
+| `vX.Y.Z`, `X.Y`, `latest` | Release builds, default backends (REST, Hive, S3) |
+| `vX.Y.Z-full`, `X.Y-full`, `latest-full` | Release builds, all optional backends |
+| `edge`, `edge-full` | Latest commit on `main` |
+| `sha-<commit>`, `sha-<commit>-full` | A specific commit |
+
+Images carry an SBOM and SLSA provenance; verify with
+`gh attestation verify oci://ghcr.io/ragnard/iceberg_exporter:latest --repo ragnard/iceberg_exporter`.
+
+To build locally:
+
 ```bash
 docker build -t iceberg_exporter .
 docker build --build-arg TAGS="glue gcs" -t iceberg_exporter .
