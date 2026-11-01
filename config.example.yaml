@@ -1,0 +1,49 @@
+# Example configuration for iceberg_exporter.
+#
+# $${VAR} placeholders are expanded from the environment before this file is
+# parsed. Use $$ for a literal dollar sign. Unset variables are an error.
+
+listen: ":8080"
+log:
+  level: info
+  format: logfmt
+
+catalogs:
+  prod:
+    type: rest
+    uri: https://iceberg.example.com
+    warehouse: s3://lake/warehouse
+    credential: ${ICEBERG_CREDENTIAL}
+    properties:
+      s3.region: eu-west-1
+
+scrape:
+  interval: 5m
+  timeout: 4m
+  concurrency: 4
+  # catalogs: [prod]
+
+  namespaces:
+    include: ["**"]
+    exclude:
+      - "tmp.**"
+      - "**.staging"
+
+  tables:
+    include: ["**"]
+    exclude:
+      - "**_staging"
+
+  manifests:
+    enabled: true
+    concurrency: 8
+
+  partitions:
+    # Upper bound on tracked partitions per table. Totals stay exact when
+    # this is exceeded; partition distributions become approximate and
+    # iceberg_table_partition_tracking_truncated becomes 1.
+    max_tracked: 100000
+
+  small_file_bytes: 67108864        # 64 MiB; 0 disables the small-file metric
+  large_file_bytes: 0               # 0 = 2 x effective target file size
+  target_file_size_bytes: 536870912 # fallback: 512 MiB

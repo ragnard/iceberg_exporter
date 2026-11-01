@@ -1,0 +1,6 @@
+/iceberg_exporter
+/dist/
+/coverage.out
+*.test
+.idea/
+.vscode/

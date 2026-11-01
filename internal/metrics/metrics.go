@@ -1,0 +1,332 @@
+// Package metrics renders the latest scrape state as Prometheus metrics.
+package metrics
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/ragnard/iceberg_exporter/internal/scrape"
+)
+
+var tableLabels = []string{"catalog", "namespace", "table"}
+
+// BuildInfo describes what was compiled into this binary.
+type BuildInfo struct {
+	Version      string
+	Revision     string
+	Catalogs     []string
+	ObjectStores []string
+}
+
+// StateProvider supplies the latest scrape state.
+type StateProvider interface {
+	State() *scrape.State
+}
+
+// Collector renders the latest scrape state.
+type Collector struct {
+	scraper     StateProvider
+	build       BuildInfo
+	tableErrors *prometheus.CounterVec
+	descs       []*prometheus.Desc
+
+	info                    *prometheus.Desc
+	formatVersion           *prometheus.Desc
+	partitioned             *prometheus.Desc
+	schemaCount             *prometheus.Desc
+	partitionSpecCount      *prometheus.Desc
+	currentSnapshotInfo     *prometheus.Desc
+	currentSnapshotTime     *prometheus.Desc
+	currentSnapshotAge      *prometheus.Desc
+	lastUpdatedTime         *prometheus.Desc
+	lastUpdatedAge          *prometheus.Desc
+	snapshotCount           *prometheus.Desc
+	oldestSnapshotTime      *prometheus.Desc
+	oldestSnapshotAge       *prometheus.Desc
+	refCount                *prometheus.Desc
+	lastSequenceNumber      *prometheus.Desc
+	targetFileSizeBytes     *prometheus.Desc
+	filesAdded              *prometheus.Desc
+	filesRemoved            *prometheus.Desc
+	bytesAdded              *prometheus.Desc
+	bytesRemoved            *prometheus.Desc
+	recordsAdded            *prometheus.Desc
+	recordsRemoved          *prometheus.Desc
+	manifests               *prometheus.Desc
+	dataFiles               *prometheus.Desc
+	dataBytes               *prometheus.Desc
+	dataRecords             *prometheus.Desc
+	deleteFiles             *prometheus.Desc
+	deleteRecords           *prometheus.Desc
+	smallFiles              *prometheus.Desc
+	largeFiles              *prometheus.Desc
+	fileSizes               *prometheus.Desc
+	partitions              *prometheus.Desc
+	partitionFiles          *prometheus.Desc
+	partitionBytes          *prometheus.Desc
+	partitionRecords        *prometheus.Desc
+	partitionFilesMax       *prometheus.Desc
+	partitionBytesMax       *prometheus.Desc
+	partitionTrackingFailed *prometheus.Desc
+	tableScrapeSuccess      *prometheus.Desc
+	tableLastSuccess        *prometheus.Desc
+	duplicateTableLabels    *prometheus.Desc
+}
+
+// NewCollector creates the exporter collector.
+func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
+	d := func(name, help string) *prometheus.Desc {
+		return prometheus.NewDesc("iceberg_table_"+name, help, tableLabels, nil)
+	}
+	c := &Collector{
+		scraper: scraper,
+		build:   build,
+		tableErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "iceberg_exporter_table_errors_total",
+			Help: "Total number of failed table collections, by catalog.",
+		}, []string{"catalog"}),
+
+		info:                    d("info", "Always 1; identifies a table that is being collected."),
+		formatVersion:           d("format_version", "Iceberg table format version."),
+		partitioned:             d("partitioned", "1 if the table's current partition spec has fields, 0 otherwise."),
+		schemaCount:             d("schema_count", "Number of schemas in the table metadata."),
+		partitionSpecCount:      d("partition_spec_count", "Number of partition specs in the table metadata."),
+		currentSnapshotInfo:     prometheus.NewDesc("iceberg_table_current_snapshot_info", "Current snapshot ID; always 1.", append(append([]string{}, tableLabels...), "snapshot_id"), nil),
+		currentSnapshotTime:     d("current_snapshot_timestamp_seconds", "Timestamp of the current snapshot."),
+		currentSnapshotAge:      d("current_snapshot_age_seconds", "Age of the current snapshot."),
+		lastUpdatedTime:         d("last_updated_timestamp_seconds", "Time the table metadata was last updated."),
+		lastUpdatedAge:          d("last_updated_age_seconds", "Age of the last table metadata update."),
+		snapshotCount:           d("snapshot_count", "Number of snapshots retained in the table metadata."),
+		oldestSnapshotTime:      d("oldest_snapshot_timestamp_seconds", "Timestamp of the oldest retained snapshot."),
+		oldestSnapshotAge:       d("oldest_snapshot_age_seconds", "Age of the oldest retained snapshot."),
+		refCount:                d("ref_count", "Number of snapshot references (branches and tags)."),
+		lastSequenceNumber:      d("last_sequence_number", "Last sequence number in the table metadata."),
+		targetFileSizeBytes:     d("target_file_size_bytes", "Effective target data file size, from table properties or defaults."),
+		filesAdded:              d("last_snapshot_files_added", "Data files added by the current snapshot."),
+		filesRemoved:            d("last_snapshot_files_removed", "Data files removed by the current snapshot."),
+		bytesAdded:              d("last_snapshot_bytes_added", "File bytes added by the current snapshot."),
+		bytesRemoved:            d("last_snapshot_bytes_removed", "File bytes removed by the current snapshot."),
+		recordsAdded:            d("last_snapshot_records_added", "Records added by the current snapshot."),
+		recordsRemoved:          d("last_snapshot_records_removed", "Records removed by the current snapshot."),
+		manifests:               d("manifests", "Number of manifests in the current snapshot."),
+		dataFiles:               d("data_files", "Number of live data files in the current snapshot."),
+		dataBytes:               d("data_bytes", "Total size of live data files in the current snapshot."),
+		dataRecords:             d("data_records", "Records in live data files in the current snapshot, before delete files are applied."),
+		deleteFiles:             d("delete_files", "Number of live delete files in the current snapshot."),
+		deleteRecords:           d("delete_records", "Total records in live delete files in the current snapshot."),
+		smallFiles:              d("small_files", "Data files smaller than the configured small-file threshold."),
+		largeFiles:              d("large_files", "Data files larger than the configured large-file threshold."),
+		fileSizes:               d("file_size_bytes", "Distribution of live data file sizes."),
+		partitions:              d("partitions", "Number of distinct live partitions; 1 for unpartitioned tables."),
+		partitionFiles:          d("partition_files", "Distribution of live data files per partition."),
+		partitionBytes:          d("partition_bytes", "Distribution of live data bytes per partition."),
+		partitionRecords:        d("partition_records", "Distribution of live records per partition."),
+		partitionFilesMax:       d("partition_files_max", "Largest number of live data files in a single partition."),
+		partitionBytesMax:       d("partition_bytes_max", "Largest number of live data bytes in a single partition."),
+		partitionTrackingFailed: d("partition_tracking_truncated", "1 if partition distribution tracking hit the configured limit."),
+		tableScrapeSuccess:      d("scrape_success", "1 if the table was collected successfully in the latest refresh, 0 otherwise."),
+		tableLastSuccess:        d("last_successful_scrape_timestamp_seconds", "Time the table was last collected successfully."),
+		duplicateTableLabels: prometheus.NewDesc(
+			"iceberg_exporter_duplicate_table_labels",
+			"Number of tables skipped because their catalog/namespace/table labels collided with another table.",
+			nil, nil,
+		),
+	}
+
+	c.descs = []*prometheus.Desc{
+		c.info, c.formatVersion, c.partitioned, c.schemaCount, c.partitionSpecCount,
+		c.currentSnapshotInfo, c.currentSnapshotTime, c.currentSnapshotAge,
+		c.lastUpdatedTime, c.lastUpdatedAge, c.snapshotCount,
+		c.oldestSnapshotTime, c.oldestSnapshotAge, c.refCount,
+		c.lastSequenceNumber, c.targetFileSizeBytes,
+		c.filesAdded, c.filesRemoved, c.bytesAdded, c.bytesRemoved,
+		c.recordsAdded, c.recordsRemoved,
+		c.manifests, c.dataFiles, c.dataBytes, c.dataRecords,
+		c.deleteFiles, c.deleteRecords, c.smallFiles, c.largeFiles,
+		c.fileSizes, c.partitions, c.partitionFiles, c.partitionBytes,
+		c.partitionRecords, c.partitionFilesMax, c.partitionBytesMax,
+		c.partitionTrackingFailed, c.tableScrapeSuccess, c.tableLastSuccess,
+		c.duplicateTableLabels,
+	}
+	return c
+}
+
+// TableErrors returns the counter of failed table collections.
+func (c *Collector) TableErrors() *prometheus.CounterVec { return c.tableErrors }
+
+// ObserveTableError increments the per-catalog table error counter.
+func (c *Collector) ObserveTableError(catalog string) { c.tableErrors.WithLabelValues(catalog).Inc() }
+
+var (
+	buildInfoDesc = prometheus.NewDesc(
+		"iceberg_exporter_build_info",
+		"Build information and the catalog and object-store backends compiled into this binary.",
+		[]string{"version", "revision", "catalogs", "object_stores"}, nil,
+	)
+	scrapeDurationDesc = prometheus.NewDesc(
+		"iceberg_exporter_scrape_duration_seconds",
+		"Duration of the latest refresh.",
+		nil, nil,
+	)
+	lastScrapeDesc = prometheus.NewDesc(
+		"iceberg_exporter_last_scrape_timestamp_seconds",
+		"Time the latest refresh finished.",
+		nil, nil,
+	)
+	scrapeSuccessDesc = prometheus.NewDesc(
+		"iceberg_exporter_scrape_success",
+		"1 if the latest refresh completed discovery without errors, 0 otherwise.",
+		nil, nil,
+	)
+	tablesDiscoveredDesc = prometheus.NewDesc(
+		"iceberg_exporter_tables_discovered",
+		"Number of tables discovered in the latest refresh.",
+		nil, nil,
+	)
+	tablesCollectedDesc = prometheus.NewDesc(
+		"iceberg_exporter_tables_collected",
+		"Number of tables collected successfully in the latest refresh.",
+		nil, nil,
+	)
+	tablesFailingDesc = prometheus.NewDesc(
+		"iceberg_exporter_tables_failing",
+		"Number of tables whose latest collection failed.",
+		nil, nil,
+	)
+)
+
+// Describe implements prometheus.Collector.
+func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
+	for _, desc := range c.descs {
+		ch <- desc
+	}
+	ch <- buildInfoDesc
+	ch <- scrapeDurationDesc
+	ch <- lastScrapeDesc
+	ch <- scrapeSuccessDesc
+	ch <- tablesDiscoveredDesc
+	ch <- tablesCollectedDesc
+	ch <- tablesFailingDesc
+}
+
+// Collect implements prometheus.Collector.
+func (c *Collector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(buildInfoDesc, prometheus.GaugeValue, 1,
+		c.build.Version, c.build.Revision,
+		strings.Join(c.build.Catalogs, ","), strings.Join(c.build.ObjectStores, ","))
+
+	st := c.scraper.State()
+	if st == nil {
+		return
+	}
+
+	now := time.Now()
+	gauge := func(desc *prometheus.Desc, v float64) {
+		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v)
+	}
+	gauge(scrapeDurationDesc, st.Duration.Seconds())
+	gauge(lastScrapeDesc, float64(st.Finished.Unix()))
+	gauge(scrapeSuccessDesc, boolFloat(st.Success))
+	gauge(tablesDiscoveredDesc, float64(st.Discovered))
+	gauge(tablesCollectedDesc, float64(st.Collected))
+	gauge(tablesFailingDesc, float64(st.Failing))
+
+	seenTables := make(map[string]struct{}, len(st.Tables))
+	duplicates := 0
+	for _, res := range st.Tables {
+		labels := []string{res.Ref.Catalog, res.Ref.Namespace, res.Ref.Table}
+		labelKey := strings.Join(labels, "\x00")
+		if _, seen := seenTables[labelKey]; seen {
+			duplicates++
+			continue
+		}
+		seenTables[labelKey] = struct{}{}
+		tableGauge := func(desc *prometheus.Desc, v float64) {
+			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, labels...)
+		}
+		tableGauge(c.tableScrapeSuccess, boolFloat(res.Success))
+		if !res.LastSuccess.IsZero() {
+			tableGauge(c.tableLastSuccess, float64(res.LastSuccess.Unix()))
+		}
+
+		s := res.Stats
+		if s == nil {
+			continue
+		}
+		tableGauge(c.info, 1)
+		tableGauge(c.formatVersion, float64(s.FormatVersion))
+		tableGauge(c.partitioned, boolFloat(s.Partitioned))
+		tableGauge(c.schemaCount, float64(s.SchemaCount))
+		tableGauge(c.partitionSpecCount, float64(s.PartitionSpecCount))
+		if s.HasCurrentSnapshot {
+			ch <- prometheus.MustNewConstMetric(c.currentSnapshotInfo, prometheus.GaugeValue, 1,
+				append(append([]string{}, labels...), strconv.FormatInt(s.CurrentSnapshotID, 10))...)
+			tableGauge(c.currentSnapshotTime, msToSeconds(s.CurrentSnapshotTimestampMs))
+			tableGauge(c.currentSnapshotAge, ageSeconds(now, s.CurrentSnapshotTimestampMs))
+		}
+		tableGauge(c.lastUpdatedTime, msToSeconds(s.LastUpdatedMs))
+		tableGauge(c.lastUpdatedAge, ageSeconds(now, s.LastUpdatedMs))
+		tableGauge(c.snapshotCount, float64(s.SnapshotCount))
+		if s.HasSnapshots {
+			tableGauge(c.oldestSnapshotTime, msToSeconds(s.OldestSnapshotTimestampMs))
+			tableGauge(c.oldestSnapshotAge, ageSeconds(now, s.OldestSnapshotTimestampMs))
+		}
+		tableGauge(c.refCount, float64(s.RefCount))
+		tableGauge(c.lastSequenceNumber, float64(s.LastSequenceNumber))
+		tableGauge(c.targetFileSizeBytes, float64(s.TargetFileSizeBytes))
+
+		if s.HasLastSnapshotSummary {
+			tableGauge(c.filesAdded, float64(s.LastSnapshot.FilesAdded))
+			tableGauge(c.filesRemoved, float64(s.LastSnapshot.FilesRemoved))
+			tableGauge(c.bytesAdded, float64(s.LastSnapshot.BytesAdded))
+			tableGauge(c.bytesRemoved, float64(s.LastSnapshot.BytesRemoved))
+			tableGauge(c.recordsAdded, float64(s.LastSnapshot.RecordsAdded))
+			tableGauge(c.recordsRemoved, float64(s.LastSnapshot.RecordsRemoved))
+		}
+
+		if !s.FileStatsCollected {
+			continue
+		}
+		tableGauge(c.manifests, float64(s.ManifestCount))
+		tableGauge(c.dataFiles, float64(s.DataFiles))
+		tableGauge(c.dataBytes, float64(s.DataBytes))
+		tableGauge(c.dataRecords, float64(s.DataRecords))
+		tableGauge(c.deleteFiles, float64(s.DeleteFiles))
+		tableGauge(c.deleteRecords, float64(s.DeleteRecords))
+		tableGauge(c.smallFiles, float64(s.SmallFiles))
+		tableGauge(c.largeFiles, float64(s.LargeFiles))
+		ch <- prometheus.MustNewConstHistogram(c.fileSizes, s.FileSizes.Count, s.FileSizes.Sum, s.FileSizes.PromBuckets(), labels...)
+		tableGauge(c.partitions, float64(s.Partitions))
+		ch <- prometheus.MustNewConstHistogram(c.partitionFiles, s.PartitionFiles.Count, s.PartitionFiles.Sum, s.PartitionFiles.PromBuckets(), labels...)
+		ch <- prometheus.MustNewConstHistogram(c.partitionBytes, s.PartitionBytes.Count, s.PartitionBytes.Sum, s.PartitionBytes.PromBuckets(), labels...)
+		ch <- prometheus.MustNewConstHistogram(c.partitionRecords, s.PartitionRecords.Count, s.PartitionRecords.Sum, s.PartitionRecords.PromBuckets(), labels...)
+		tableGauge(c.partitionFilesMax, float64(s.PartitionFilesMax))
+		tableGauge(c.partitionBytesMax, float64(s.PartitionBytesMax))
+		tableGauge(c.partitionTrackingFailed, boolFloat(s.PartitionTrackingTruncated))
+	}
+
+	gauge(c.duplicateTableLabels, float64(duplicates))
+}
+
+func msToSeconds(ms int64) float64 { return float64(ms) / 1000 }
+
+func ageSeconds(now time.Time, ms int64) float64 {
+	if ms <= 0 {
+		return 0
+	}
+	age := now.Sub(time.UnixMilli(ms)).Seconds()
+	if age < 0 {
+		return 0
+	}
+	return age
+}
+
+func boolFloat(v bool) float64 {
+	if v {
+		return 1
+	}
+	return 0
+}
