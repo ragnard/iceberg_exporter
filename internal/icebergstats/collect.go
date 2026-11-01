@@ -88,6 +88,7 @@ func Collect(ctx context.Context, cat catalog.Catalog, ident table.Identifier, o
 	for range md.Refs() {
 		s.RefCount++
 	}
+	collectHealth(md, s)
 
 	s.TargetFileSizeBytes = opts.TargetFileBytes
 	if v, ok := md.Properties()["write.target-file-size-bytes"]; ok {
@@ -319,6 +320,12 @@ type accumulator struct {
 	dataRecords       int64
 	deleteFiles       int64
 	deleteRecords     int64
+	posDeleteFiles    int64
+	posDeleteRecords  int64
+	eqDeleteFiles     int64
+	eqDeleteRecords   int64
+	dvFiles           int64
+	dvRecords         int64
 	smallFiles        int64
 	largeFiles        int64
 	fileSizes         Histogram
@@ -371,8 +378,20 @@ func (a *accumulator) addDataFile(df iceberg.DataFile, partitionKey string) {
 func (a *accumulator) addDeleteFile(df iceberg.DataFile) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	records := df.Count()
 	a.deleteFiles++
-	a.deleteRecords += df.Count()
+	a.deleteRecords += records
+	switch {
+	case df.ContentType() == iceberg.EntryContentEqDeletes:
+		a.eqDeleteFiles++
+		a.eqDeleteRecords += records
+	case df.FileFormat() == iceberg.PuffinFile:
+		a.dvFiles++
+		a.dvRecords += records
+	default:
+		a.posDeleteFiles++
+		a.posDeleteRecords += records
+	}
 }
 
 func (a *accumulator) finalize(s *TableStats) {
@@ -384,6 +403,12 @@ func (a *accumulator) finalize(s *TableStats) {
 	s.DataRecords = a.dataRecords
 	s.DeleteFiles = a.deleteFiles
 	s.DeleteRecords = a.deleteRecords
+	s.PositionDeleteFiles = a.posDeleteFiles
+	s.PositionDeleteRecords = a.posDeleteRecords
+	s.EqualityDeleteFiles = a.eqDeleteFiles
+	s.EqualityDeleteRecords = a.eqDeleteRecords
+	s.DeletionVectors = a.dvFiles
+	s.DeletionVectorRecords = a.dvRecords
 	s.SmallFiles = a.smallFiles
 	s.LargeFiles = a.largeFiles
 	s.FileSizes = a.fileSizes

@@ -7,6 +7,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/ragnard/iceberg_exporter/internal/icebergstats"
 	"github.com/ragnard/iceberg_exporter/internal/scrape"
 )
 
@@ -72,12 +73,31 @@ type Collector struct {
 	tableScrapeSuccess      *prometheus.Desc
 	tableLastSuccess        *prometheus.Desc
 	duplicateTableLabels    *prometheus.Desc
+
+	refs                       *prometheus.Desc
+	oldestRefSnapshotAge       *prometheus.Desc
+	metadataLogEntries         *prometheus.Desc
+	lastOperationTime          *prometheus.Desc
+	statisticsFiles            *prometheus.Desc
+	partitionStatisticsFiles   *prometheus.Desc
+	currentSnapshotHasStats    *prometheus.Desc
+	snapshotMaxAge             *prometheus.Desc
+	minSnapshotsToKeep         *prometheus.Desc
+	metadataPreviousVersionMax *prometheus.Desc
+	metadataDeleteAfterCommit  *prometheus.Desc
+	gcEnabled                  *prometheus.Desc
+	manifestMergeEnabled       *prometheus.Desc
+	deleteFilesByType          *prometheus.Desc
+	deleteRecordsByType        *prometheus.Desc
 }
 
 // NewCollector creates the exporter collector.
 func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 	d := func(name, help string) *prometheus.Desc {
 		return prometheus.NewDesc("iceberg_table_"+name, help, tableLabels, nil)
+	}
+	dl := func(name, help, label string) *prometheus.Desc {
+		return prometheus.NewDesc("iceberg_table_"+name, help, append(append([]string{}, tableLabels...), label), nil)
 	}
 	c := &Collector{
 		scraper: scraper,
@@ -87,45 +107,60 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 			Help: "Total number of failed table collections, by catalog.",
 		}, []string{"catalog"}),
 
-		info:                    d("info", "Always 1; identifies a table that is being collected."),
-		formatVersion:           d("format_version", "Iceberg table format version."),
-		partitioned:             d("partitioned", "1 if the table's current partition spec has fields, 0 otherwise."),
-		schemaCount:             d("schema_count", "Number of schemas in the table metadata."),
-		partitionSpecCount:      d("partition_spec_count", "Number of partition specs in the table metadata."),
-		currentSnapshotTime:     d("current_snapshot_timestamp_seconds", "Timestamp of the current snapshot."),
-		currentSnapshotAge:      d("current_snapshot_age_seconds", "Age of the current snapshot."),
-		lastUpdatedTime:         d("last_updated_timestamp_seconds", "Time the table metadata was last updated."),
-		lastUpdatedAge:          d("last_updated_age_seconds", "Age of the last table metadata update."),
-		snapshotCount:           d("snapshot_count", "Number of snapshots retained in the table metadata."),
-		oldestSnapshotTime:      d("oldest_snapshot_timestamp_seconds", "Timestamp of the oldest retained snapshot."),
-		oldestSnapshotAge:       d("oldest_snapshot_age_seconds", "Age of the oldest retained snapshot."),
-		refCount:                d("ref_count", "Number of snapshot references (branches and tags)."),
-		lastSequenceNumber:      d("last_sequence_number", "Last sequence number in the table metadata."),
-		targetFileSizeBytes:     d("target_file_size_bytes", "Effective target data file size, from table properties or defaults."),
-		filesAdded:              d("last_snapshot_files_added", "Data files added by the current snapshot."),
-		filesRemoved:            d("last_snapshot_files_removed", "Data files removed by the current snapshot."),
-		bytesAdded:              d("last_snapshot_bytes_added", "File bytes added by the current snapshot."),
-		bytesRemoved:            d("last_snapshot_bytes_removed", "File bytes removed by the current snapshot."),
-		recordsAdded:            d("last_snapshot_records_added", "Records added by the current snapshot."),
-		recordsRemoved:          d("last_snapshot_records_removed", "Records removed by the current snapshot."),
-		manifests:               d("manifests", "Number of manifests in the current snapshot."),
-		dataFiles:               d("data_files", "Number of live data files in the current snapshot."),
-		dataBytes:               d("data_bytes", "Total size of live data files in the current snapshot."),
-		dataRecords:             d("data_records", "Records in live data files in the current snapshot, before delete files are applied."),
-		deleteFiles:             d("delete_files", "Number of live delete files in the current snapshot."),
-		deleteRecords:           d("delete_records", "Total records in live delete files in the current snapshot."),
-		smallFiles:              d("small_files", "Data files smaller than the configured small-file threshold."),
-		largeFiles:              d("large_files", "Data files larger than the configured large-file threshold."),
-		fileSizes:               d("file_size_bytes", "Distribution of live data file sizes."),
-		partitions:              d("partitions", "Number of distinct live partitions; 1 for unpartitioned tables."),
-		partitionFiles:          d("partition_files", "Distribution of live data files per partition."),
-		partitionBytes:          d("partition_bytes", "Distribution of live data bytes per partition."),
-		partitionRecords:        d("partition_records", "Distribution of live records per partition."),
-		partitionFilesMax:       d("partition_files_max", "Largest number of live data files in a single partition."),
-		partitionBytesMax:       d("partition_bytes_max", "Largest number of live data bytes in a single partition."),
-		partitionTrackingFailed: d("partition_tracking_truncated", "1 if partition distribution tracking hit the configured limit."),
-		tableScrapeSuccess:      d("scrape_success", "1 if the table was collected successfully in the latest refresh, 0 otherwise."),
-		tableLastSuccess:        d("last_successful_scrape_timestamp_seconds", "Time the table was last collected successfully."),
+		info:                       d("info", "Always 1; identifies a table that is being collected."),
+		formatVersion:              d("format_version", "Iceberg table format version."),
+		partitioned:                d("partitioned", "1 if the table's current partition spec has fields, 0 otherwise."),
+		schemaCount:                d("schema_count", "Number of schemas in the table metadata."),
+		partitionSpecCount:         d("partition_spec_count", "Number of partition specs in the table metadata."),
+		currentSnapshotTime:        d("current_snapshot_timestamp_seconds", "Timestamp of the current snapshot."),
+		currentSnapshotAge:         d("current_snapshot_age_seconds", "Age of the current snapshot."),
+		lastUpdatedTime:            d("last_updated_timestamp_seconds", "Time the table metadata was last updated."),
+		lastUpdatedAge:             d("last_updated_age_seconds", "Age of the last table metadata update."),
+		snapshotCount:              d("snapshot_count", "Number of snapshots retained in the table metadata."),
+		oldestSnapshotTime:         d("oldest_snapshot_timestamp_seconds", "Timestamp of the oldest retained snapshot."),
+		oldestSnapshotAge:          d("oldest_snapshot_age_seconds", "Age of the oldest retained snapshot."),
+		refCount:                   d("ref_count", "Number of snapshot references (branches and tags)."),
+		lastSequenceNumber:         d("last_sequence_number", "Last sequence number in the table metadata."),
+		targetFileSizeBytes:        d("setting_target_file_size_bytes", "Effective target data file size, from table properties or defaults."),
+		filesAdded:                 d("last_snapshot_files_added", "Data files added by the current snapshot."),
+		filesRemoved:               d("last_snapshot_files_removed", "Data files removed by the current snapshot."),
+		bytesAdded:                 d("last_snapshot_bytes_added", "File bytes added by the current snapshot."),
+		bytesRemoved:               d("last_snapshot_bytes_removed", "File bytes removed by the current snapshot."),
+		recordsAdded:               d("last_snapshot_records_added", "Records added by the current snapshot."),
+		recordsRemoved:             d("last_snapshot_records_removed", "Records removed by the current snapshot."),
+		manifests:                  d("manifests", "Number of manifests in the current snapshot."),
+		dataFiles:                  d("data_files", "Number of live data files in the current snapshot."),
+		dataBytes:                  d("data_bytes", "Total size of live data files in the current snapshot."),
+		dataRecords:                d("data_records", "Records in live data files in the current snapshot, before delete files are applied."),
+		deleteFiles:                d("delete_files", "Number of live delete files in the current snapshot."),
+		deleteRecords:              d("delete_records", "Total records in live delete files in the current snapshot."),
+		smallFiles:                 d("small_files", "Data files smaller than the configured small-file threshold."),
+		largeFiles:                 d("large_files", "Data files larger than the configured large-file threshold."),
+		fileSizes:                  d("file_size_bytes", "Distribution of live data file sizes."),
+		partitions:                 d("partitions", "Number of distinct live partitions; 1 for unpartitioned tables."),
+		partitionFiles:             d("partition_files", "Distribution of live data files per partition."),
+		partitionBytes:             d("partition_bytes", "Distribution of live data bytes per partition."),
+		partitionRecords:           d("partition_records", "Distribution of live records per partition."),
+		partitionFilesMax:          d("partition_files_max", "Largest number of live data files in a single partition."),
+		partitionBytesMax:          d("partition_bytes_max", "Largest number of live data bytes in a single partition."),
+		partitionTrackingFailed:    d("partition_tracking_truncated", "1 if partition distribution tracking hit the configured limit."),
+		tableScrapeSuccess:         d("scrape_success", "1 if the table was collected successfully in the latest refresh, 0 otherwise."),
+		tableLastSuccess:           d("last_successful_scrape_timestamp_seconds", "Time the table was last collected successfully."),
+		refs:                       dl("refs", "Number of snapshot references, by type (branch or tag). Branches include main.", "type"),
+		oldestRefSnapshotAge:       dl("oldest_ref_snapshot_age_seconds", "Age of the snapshot referenced by the oldest non-main branch or tag, by type.", "type"),
+		metadataLogEntries:         d("metadata_log_entries", "Number of previous metadata files tracked in the metadata log."),
+		lastOperationTime:          dl("last_operation_timestamp_seconds", "Timestamp of the newest retained snapshot for each snapshot operation; replace is typically compaction.", "operation"),
+		statisticsFiles:            d("statistics_files", "Number of table statistics (Puffin) files registered in the table metadata."),
+		partitionStatisticsFiles:   d("partition_statistics_files", "Number of partition statistics files registered in the table metadata."),
+		currentSnapshotHasStats:    d("current_snapshot_has_statistics", "1 if a table statistics file exists for the current snapshot, 0 otherwise."),
+		snapshotMaxAge:             d("setting_snapshot_max_age_seconds", "Effective snapshot retention age (main branch override, history.expire.max-snapshot-age-ms, or the Iceberg default)."),
+		minSnapshotsToKeep:         d("setting_min_snapshots_to_keep", "Effective minimum number of snapshots kept by expiration (main branch override, history.expire.min-snapshots-to-keep, or the Iceberg default)."),
+		metadataPreviousVersionMax: d("setting_metadata_previous_versions_max", "Effective write.metadata.previous-versions-max."),
+		metadataDeleteAfterCommit:  d("setting_metadata_delete_after_commit_enabled", "1 if write.metadata.delete-after-commit.enabled is effectively true, 0 otherwise."),
+		gcEnabled:                  d("setting_gc_enabled", "1 if gc.enabled is effectively true, 0 otherwise."),
+		manifestMergeEnabled:       d("setting_manifest_merge_enabled", "1 if commit.manifest-merge.enabled is effectively true, 0 otherwise."),
+		deleteFilesByType:          dl("delete_files_by_type", "Number of live delete files in the current snapshot, by type (position, equality, deletion_vector).", "type"),
+		deleteRecordsByType:        dl("delete_records_by_type", "Records in live delete files in the current snapshot, by type (position, equality, deletion_vector).", "type"),
 		duplicateTableLabels: prometheus.NewDesc(
 			"iceberg_exporter_duplicate_table_labels",
 			"Number of tables skipped because their catalog/namespace/table labels collided with another table.",
@@ -147,6 +182,11 @@ func NewCollector(scraper StateProvider, build BuildInfo) *Collector {
 		c.partitionRecords, c.partitionFilesMax, c.partitionBytesMax,
 		c.partitionTrackingFailed, c.tableScrapeSuccess, c.tableLastSuccess,
 		c.duplicateTableLabels,
+		c.refs, c.oldestRefSnapshotAge, c.metadataLogEntries, c.lastOperationTime,
+		c.statisticsFiles, c.partitionStatisticsFiles, c.currentSnapshotHasStats,
+		c.snapshotMaxAge, c.minSnapshotsToKeep, c.metadataPreviousVersionMax,
+		c.metadataDeleteAfterCommit, c.gcEnabled, c.manifestMergeEnabled,
+		c.deleteFilesByType, c.deleteRecordsByType,
 	}
 	return c
 }
@@ -280,6 +320,33 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		tableGauge(c.lastSequenceNumber, float64(s.LastSequenceNumber))
 		tableGauge(c.targetFileSizeBytes, float64(s.TargetFileSizeBytes))
 
+		labelGauge := func(desc *prometheus.Desc, v float64, extra string) {
+			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, v, append(append([]string{}, labels...), extra)...)
+		}
+		labelGauge(c.refs, float64(s.Branches), "branch")
+		labelGauge(c.refs, float64(s.Tags), "tag")
+		if s.HasOldestBranch {
+			labelGauge(c.oldestRefSnapshotAge, ageSeconds(now, s.OldestBranchSnapshotMs), "branch")
+		}
+		if s.HasOldestTag {
+			labelGauge(c.oldestRefSnapshotAge, ageSeconds(now, s.OldestTagSnapshotMs), "tag")
+		}
+		tableGauge(c.metadataLogEntries, float64(s.MetadataLogEntries))
+		for _, op := range icebergstats.SnapshotOperations {
+			if ms, ok := s.LastOperationMs[op]; ok {
+				labelGauge(c.lastOperationTime, msToSeconds(ms), op)
+			}
+		}
+		tableGauge(c.statisticsFiles, float64(s.StatisticsFiles))
+		tableGauge(c.partitionStatisticsFiles, float64(s.PartitionStatisticsFiles))
+		tableGauge(c.currentSnapshotHasStats, boolFloat(s.CurrentSnapshotHasStatistics))
+		tableGauge(c.snapshotMaxAge, msToSeconds(s.Settings.SnapshotMaxAgeMs))
+		tableGauge(c.minSnapshotsToKeep, float64(s.Settings.MinSnapshotsToKeep))
+		tableGauge(c.metadataPreviousVersionMax, float64(s.Settings.MetadataPreviousVersionsMax))
+		tableGauge(c.metadataDeleteAfterCommit, boolFloat(s.Settings.MetadataDeleteAfterCommit))
+		tableGauge(c.gcEnabled, boolFloat(s.Settings.GCEnabled))
+		tableGauge(c.manifestMergeEnabled, boolFloat(s.Settings.ManifestMergeEnabled))
+
 		if s.HasLastSnapshotSummary {
 			tableGauge(c.filesAdded, float64(s.LastSnapshot.FilesAdded))
 			tableGauge(c.filesRemoved, float64(s.LastSnapshot.FilesRemoved))
@@ -298,6 +365,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		tableGauge(c.dataRecords, float64(s.DataRecords))
 		tableGauge(c.deleteFiles, float64(s.DeleteFiles))
 		tableGauge(c.deleteRecords, float64(s.DeleteRecords))
+		labelGauge(c.deleteFilesByType, float64(s.PositionDeleteFiles), "position")
+		labelGauge(c.deleteFilesByType, float64(s.EqualityDeleteFiles), "equality")
+		labelGauge(c.deleteFilesByType, float64(s.DeletionVectors), "deletion_vector")
+		labelGauge(c.deleteRecordsByType, float64(s.PositionDeleteRecords), "position")
+		labelGauge(c.deleteRecordsByType, float64(s.EqualityDeleteRecords), "equality")
+		labelGauge(c.deleteRecordsByType, float64(s.DeletionVectorRecords), "deletion_vector")
 		tableGauge(c.smallFiles, float64(s.SmallFiles))
 		tableGauge(c.largeFiles, float64(s.LargeFiles))
 		ch <- prometheus.MustNewConstHistogram(c.fileSizes, s.FileSizes.Count, s.FileSizes.Sum, s.FileSizes.PromBuckets(), labels...)

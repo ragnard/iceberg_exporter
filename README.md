@@ -204,7 +204,30 @@ Common labels: `catalog`, `namespace`, `table`.
 | `iceberg_table_oldest_snapshot_age_seconds` | Age of the oldest snapshot |
 | `iceberg_table_ref_count` | Branches and tags |
 | `iceberg_table_last_sequence_number` | Last sequence number |
-| `iceberg_table_target_file_size_bytes` | Effective target data-file size |
+| `iceberg_table_refs{type}` | Refs by `type` (`branch`, `tag`); branches include `main` |
+| `iceberg_table_oldest_ref_snapshot_age_seconds{type}` | Age of the snapshot referenced by the oldest non-main branch/tag; absent if none |
+| `iceberg_table_metadata_log_entries` | Previous metadata files tracked in the metadata log |
+| `iceberg_table_last_operation_timestamp_seconds{operation}` | Newest retained snapshot per operation (`append`, `overwrite`, `delete`, `replace`); `replace` is typically compaction |
+| `iceberg_table_statistics_files` | Table statistics (Puffin) files |
+| `iceberg_table_partition_statistics_files` | Partition statistics files |
+| `iceberg_table_current_snapshot_has_statistics` | 1 if a statistics file exists for the current snapshot |
+
+### Effective table settings
+
+The `iceberg_table_setting_*` series report the value in effect for each
+table: the table property when set and valid, otherwise the default shown.
+Only this allowlist is read; no other properties are exported. Snapshot
+retention set on the `main` branch ref overrides the table properties.
+
+| Metric | Source | Default |
+|---|---|---|
+| `iceberg_table_setting_snapshot_max_age_seconds` | `history.expire.max-snapshot-age-ms` | 5 days |
+| `iceberg_table_setting_min_snapshots_to_keep` | `history.expire.min-snapshots-to-keep` | 1 |
+| `iceberg_table_setting_metadata_previous_versions_max` | `write.metadata.previous-versions-max` | 100 |
+| `iceberg_table_setting_metadata_delete_after_commit_enabled` | `write.metadata.delete-after-commit.enabled` | 0 |
+| `iceberg_table_setting_gc_enabled` | `gc.enabled` | 1 |
+| `iceberg_table_setting_manifest_merge_enabled` | `commit.manifest-merge.enabled` | 1 |
+| `iceberg_table_setting_target_file_size_bytes` | `write.target-file-size-bytes` | `scrape.target_file_size_bytes` (512 MiB) |
 
 ### Current snapshot delta
 
@@ -230,6 +253,8 @@ snapshot are counted; deleted entries are skipped.
 | `iceberg_table_data_records` | Records in live data files, before delete files are applied |
 | `iceberg_table_delete_files` | Live position/equality delete files |
 | `iceberg_table_delete_records` | Records in live delete files |
+| `iceberg_table_delete_files_by_type{type}` | Live delete files by `type` (`position`, `equality`, `deletion_vector`) |
+| `iceberg_table_delete_records_by_type{type}` | Records in live delete files by `type` |
 | `iceberg_table_small_files` | Files below `small_file_bytes` |
 | `iceberg_table_large_files` | Files above the large-file threshold |
 | `iceberg_table_file_size_bytes` | Histogram of data-file sizes |
@@ -284,7 +309,7 @@ iceberg_table_partition_bytes_max
 iceberg_table_delete_files > 0
 
 # Stale tables (no new snapshot in 24h)
-time() - iceberg_table_current_snapshot_age_seconds > 86400
+iceberg_table_current_snapshot_age_seconds > 86400
 
 # Snapshot retention is not expiring old metadata
 iceberg_table_oldest_snapshot_age_seconds > 30 * 86400
@@ -292,6 +317,84 @@ iceberg_table_oldest_snapshot_age_seconds > 30 * 86400
 # 90th percentile data-file size, per table
 histogram_quantile(0.9, sum by (catalog, namespace, table, le) (iceberg_table_file_size_bytes))
 ```
+
+## Table health rules
+
+The binary embeds a set of Prometheus rules
+([`internal/rules/iceberg_exporter.rules.yml`](internal/rules/iceberg_exporter.rules.yml))
+that turn the metrics above into one series per unhealthy table and problem:
+
+```
+iceberg_table_problem{catalog, namespace, table, problem="small_files", severity="warning"}
+```
+
+A series exists only while the problem is present; its value is the measured
+quantity (an age, ratio or count), so problems sort by severity of the
+condition.
+
+Print the rules with the `rules` subcommand, so they always match the
+exporter version that produces the metrics:
+
+```bash
+# Plain rules file, for rule_files in prometheus.yml
+iceberg_exporter rules > /etc/prometheus/rules/iceberg_exporter.rules.yml
+
+# Prometheus Operator PrometheusRule; add the labels your ruleSelector matches
+iceberg_exporter rules -format prometheusrule \
+  -namespace monitoring -label release=prometheus | kubectl apply -f -
+
+# Same, from the container image
+docker run --rm iceberg_exporter rules -format prometheusrule
+```
+
+`-name` (default `iceberg-exporter`), `-namespace` and repeatable
+`-label key=value` set the PrometheusRule metadata; the `spec` is the plain
+rules file unchanged.
+
+```promql
+# Every unhealthy table, with its problems
+iceberg_table_problem
+
+# Number of tables per problem
+count by (problem, severity) (iceberg_table_problem)
+
+# Tables with the most problems
+sort_desc(count by (catalog, namespace, table) (iceberg_table_problem))
+
+# Worst small-file offenders
+topk(10, iceberg_table_problem{problem="small_files"})
+```
+
+| Problem | Severity | Condition |
+|---|---|---|
+| `scrape_failing` | warning | The exporter cannot read the table; other problems reflect its last good state |
+| `snapshots_not_expired` | warning | Oldest snapshot older than 2 x the table's retention age, more snapshots than `min_snapshots_to_keep`, GC enabled |
+| `too_many_snapshots` | warning | More than 1000 retained snapshots |
+| `stale_refs` | warning | A non-main branch or tag references a snapshot older than 30 days |
+| `metadata_files_not_cleaned` | warning | Metadata log full and `write.metadata.delete-after-commit.enabled=false` |
+| `gc_disabled` | info | `gc.enabled=false` |
+| `small_files` | warning | More than 30% of data files are small, and more than 100 data files |
+| `too_many_manifests` | warning | More than 1000 manifests |
+| `manifest_merge_disabled` | info | `commit.manifest-merge.enabled=false` |
+| `delete_file_buildup` | warning | Delete records exceed 10% of data records, and more than 10 delete files |
+| `equality_deletes` | warning | More than 100 equality delete files |
+| `compaction_overdue` | warning | Delete files or small files present, and no retained `replace` snapshot from the last 7 days |
+| `partition_skew` | warning | Largest partition more than 10 x the average, with more than 10 partitions |
+| `over_partitioned` | warning | More than 1000 partitions averaging under 64 MiB |
+| `hot_partition_files` | warning | More than 1000 files in one partition |
+| `partition_tracking_truncated` | info | Partition distributions are approximate |
+| `format_v1` | info | Format version 1 |
+| `missing_statistics` | info | Over 100 GiB of data and no statistics file for the current snapshot |
+
+Thresholds are starting points, marked `Tune:` in the file. Save the output,
+adjust them, and load your copy instead; or add label matchers (for example `{namespace!~"raw\\..*"}`) to
+scope a check. The file also records `iceberg:tables_with_problem:count` and
+defines one alert, `IcebergTableProblem`, for warning/critical problems held
+for 1h. `make rules-check` validates the file and runs its promtool unit tests
+(`internal/rules/iceberg_exporter.rules_test.yml`) in a container.
+
+Not covered, because table metadata does not record them: orphan files,
+commit conflicts, and dangling delete files (which need per-partition state).
 
 ## Development
 
@@ -301,6 +404,7 @@ make test
 make test-race
 make test-all-tags
 make vet
+make rules-check   # promtool via docker; CONTAINER=podman or PROMTOOL=promtool to override
 ```
 
 `make test-all-tags` compiles and tests every optional backend so tagged files

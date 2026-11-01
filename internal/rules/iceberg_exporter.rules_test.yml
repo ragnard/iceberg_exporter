@@ -1,0 +1,276 @@
+# promtool unit tests for iceberg_exporter.rules.yml. Run: make rules-check
+# Every input table is named after the check it exercises; *_ok/*_few
+# tables are negative cases.
+rule_files:
+  - iceberg_exporter.rules.yml
+evaluation_interval: 1m
+tests:
+  - name: problems
+    interval: 1m
+    input_series:
+      - series: 'iceberg_table_scrape_success{catalog="c",namespace="n",table="s_fail"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_scrape_success{catalog="c",namespace="n",table="s_ok"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_oldest_snapshot_age_seconds{catalog="c",namespace="n",table="snap_bad"}'
+        values: '1000000+0x15'
+      - series: 'iceberg_table_setting_snapshot_max_age_seconds{catalog="c",namespace="n",table="snap_bad"}'
+        values: '432000+0x15'
+      - series: 'iceberg_table_snapshot_count{catalog="c",namespace="n",table="snap_bad"}'
+        values: '5+0x15'
+      - series: 'iceberg_table_setting_min_snapshots_to_keep{catalog="c",namespace="n",table="snap_bad"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_setting_gc_enabled{catalog="c",namespace="n",table="snap_bad"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_oldest_snapshot_age_seconds{catalog="c",namespace="n",table="snap_gc_off"}'
+        values: '1000000+0x15'
+      - series: 'iceberg_table_setting_snapshot_max_age_seconds{catalog="c",namespace="n",table="snap_gc_off"}'
+        values: '432000+0x15'
+      - series: 'iceberg_table_snapshot_count{catalog="c",namespace="n",table="snap_gc_off"}'
+        values: '5+0x15'
+      - series: 'iceberg_table_setting_min_snapshots_to_keep{catalog="c",namespace="n",table="snap_gc_off"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_setting_gc_enabled{catalog="c",namespace="n",table="snap_gc_off"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_oldest_snapshot_age_seconds{catalog="c",namespace="n",table="snap_ok"}'
+        values: '100000+0x15'
+      - series: 'iceberg_table_setting_snapshot_max_age_seconds{catalog="c",namespace="n",table="snap_ok"}'
+        values: '432000+0x15'
+      - series: 'iceberg_table_snapshot_count{catalog="c",namespace="n",table="snap_ok"}'
+        values: '5+0x15'
+      - series: 'iceberg_table_setting_min_snapshots_to_keep{catalog="c",namespace="n",table="snap_ok"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_setting_gc_enabled{catalog="c",namespace="n",table="snap_ok"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_snapshot_count{catalog="c",namespace="n",table="snap_many"}'
+        values: '1500+0x15'
+      - series: 'iceberg_table_oldest_ref_snapshot_age_seconds{catalog="c",namespace="n",table="refs_bad",type="tag"}'
+        values: '3000000+0x15'
+      - series: 'iceberg_table_oldest_ref_snapshot_age_seconds{catalog="c",namespace="n",table="refs_bad",type="branch"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_oldest_ref_snapshot_age_seconds{catalog="c",namespace="n",table="refs_ok",type="branch"}'
+        values: '1000+0x15'
+      - series: 'iceberg_table_metadata_log_entries{catalog="c",namespace="n",table="meta_bad"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_setting_metadata_previous_versions_max{catalog="c",namespace="n",table="meta_bad"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_setting_metadata_delete_after_commit_enabled{catalog="c",namespace="n",table="meta_bad"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_metadata_log_entries{catalog="c",namespace="n",table="meta_on"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_setting_metadata_previous_versions_max{catalog="c",namespace="n",table="meta_on"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_setting_metadata_delete_after_commit_enabled{catalog="c",namespace="n",table="meta_on"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_small_files{catalog="c",namespace="n",table="sf_bad"}'
+        values: '60+0x15'
+      - series: 'iceberg_table_data_files{catalog="c",namespace="n",table="sf_bad"}'
+        values: '120+0x15'
+      - series: 'iceberg_table_small_files{catalog="c",namespace="n",table="sf_few"}'
+        values: '10+0x15'
+      - series: 'iceberg_table_data_files{catalog="c",namespace="n",table="sf_few"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_manifests{catalog="c",namespace="n",table="man_bad"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_manifests{catalog="c",namespace="n",table="man_ok"}'
+        values: '10+0x15'
+      - series: 'iceberg_table_setting_manifest_merge_enabled{catalog="c",namespace="n",table="mm_off"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_setting_manifest_merge_enabled{catalog="c",namespace="n",table="mm_on"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_delete_files{catalog="c",namespace="n",table="del_bad"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_delete_records{catalog="c",namespace="n",table="del_bad"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_data_records{catalog="c",namespace="n",table="del_bad"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_delete_files{catalog="c",namespace="n",table="del_compacted"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_delete_records{catalog="c",namespace="n",table="del_compacted"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_data_records{catalog="c",namespace="n",table="del_compacted"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_delete_files{catalog="c",namespace="n",table="del_few"}'
+        values: '5+0x15'
+      - series: 'iceberg_table_delete_records{catalog="c",namespace="n",table="del_few"}'
+        values: '50+0x15'
+      - series: 'iceberg_table_data_records{catalog="c",namespace="n",table="del_few"}'
+        values: '100+0x15'
+      - series: 'iceberg_table_last_operation_timestamp_seconds{catalog="c",namespace="n",table="del_compacted",operation="replace"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_delete_files_by_type{catalog="c",namespace="n",table="eq_bad",type="equality"}'
+        values: '150+0x15'
+      - series: 'iceberg_table_delete_files_by_type{catalog="c",namespace="n",table="eq_bad",type="position"}'
+        values: '1000+0x15'
+      - series: 'iceberg_table_delete_files_by_type{catalog="c",namespace="n",table="eq_ok",type="equality"}'
+        values: '5+0x15'
+      - series: 'iceberg_table_partition_bytes_max{catalog="c",namespace="n",table="skew_bad"}'
+        values: '1100+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="skew_bad"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_partitions{catalog="c",namespace="n",table="skew_bad"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_partition_bytes_max{catalog="c",namespace="n",table="skew_ok"}'
+        values: '500+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="skew_ok"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_partitions{catalog="c",namespace="n",table="skew_ok"}'
+        values: '20+0x15'
+      - series: 'iceberg_table_partitions{catalog="c",namespace="n",table="op_bad"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="op_bad"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_partitions{catalog="c",namespace="n",table="op_ok"}'
+        values: '2000+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="op_ok"}'
+        values: '268435456000+0x15'
+      - series: 'iceberg_table_partition_files_max{catalog="c",namespace="n",table="hp_bad"}'
+        values: '1500+0x15'
+      - series: 'iceberg_table_partition_files_max{catalog="c",namespace="n",table="hp_ok"}'
+        values: '3+0x15'
+      - series: 'iceberg_table_partition_tracking_truncated{catalog="c",namespace="n",table="pt_bad"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_partition_tracking_truncated{catalog="c",namespace="n",table="pt_ok"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_format_version{catalog="c",namespace="n",table="fv1"}'
+        values: '1+0x15'
+      - series: 'iceberg_table_format_version{catalog="c",namespace="n",table="fv2"}'
+        values: '2+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="ms_bad"}'
+        values: '214748364800+0x15'
+      - series: 'iceberg_table_current_snapshot_has_statistics{catalog="c",namespace="n",table="ms_bad"}'
+        values: '0+0x15'
+      - series: 'iceberg_table_data_bytes{catalog="c",namespace="n",table="ms_ok"}'
+        values: '214748364800+0x15'
+      - series: 'iceberg_table_current_snapshot_has_statistics{catalog="c",namespace="n",table="ms_ok"}'
+        values: '1+0x15'
+    promql_expr_test:
+      - expr: iceberg_table_problem{problem="scrape_failing"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="s_fail",problem="scrape_failing",severity="warning"}'
+            value: 0
+      - expr: iceberg_table_problem{problem="snapshots_not_expired"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="snap_bad",problem="snapshots_not_expired",severity="warning"}'
+            value: 1000000
+      - expr: iceberg_table_problem{problem="gc_disabled"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="snap_gc_off",problem="gc_disabled",severity="info"}'
+            value: 0
+      - expr: iceberg_table_problem{problem="too_many_snapshots"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="snap_many",problem="too_many_snapshots",severity="warning"}'
+            value: 1500
+      - expr: iceberg_table_problem{problem="stale_refs"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="refs_bad",problem="stale_refs",severity="warning"}'
+            value: 3000000
+      - expr: iceberg_table_problem{problem="metadata_files_not_cleaned"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="meta_bad",problem="metadata_files_not_cleaned",severity="warning"}'
+            value: 100
+      - expr: iceberg_table_problem{problem="small_files"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="sf_bad",problem="small_files",severity="warning"}'
+            value: 0.5
+      - expr: iceberg_table_problem{problem="too_many_manifests"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="man_bad",problem="too_many_manifests",severity="warning"}'
+            value: 2000
+      - expr: iceberg_table_problem{problem="manifest_merge_disabled"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="mm_off",problem="manifest_merge_disabled",severity="info"}'
+            value: 0
+      - expr: iceberg_table_problem{problem="delete_file_buildup"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="del_bad",problem="delete_file_buildup",severity="warning"}'
+            value: 0.2
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="del_compacted",problem="delete_file_buildup",severity="warning"}'
+            value: 0.2
+      - expr: iceberg_table_problem{problem="compaction_overdue"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="del_bad",problem="compaction_overdue",severity="warning"}'
+            value: 20
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="del_few",problem="compaction_overdue",severity="warning"}'
+            value: 5
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="sf_bad",problem="compaction_overdue",severity="warning"}'
+            value: 0.5
+      - expr: iceberg_table_problem{problem="equality_deletes"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="eq_bad",problem="equality_deletes",severity="warning"}'
+            value: 150
+      - expr: iceberg_table_problem{problem="partition_skew"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="skew_bad",problem="partition_skew",severity="warning"}'
+            value: 11
+      - expr: iceberg_table_problem{problem="over_partitioned"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="op_bad",problem="over_partitioned",severity="warning"}'
+            value: 2000
+      - expr: iceberg_table_problem{problem="hot_partition_files"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="hp_bad",problem="hot_partition_files",severity="warning"}'
+            value: 1500
+      - expr: iceberg_table_problem{problem="partition_tracking_truncated"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="pt_bad",problem="partition_tracking_truncated",severity="info"}'
+            value: 1
+      - expr: iceberg_table_problem{problem="format_v1"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="fv1",problem="format_v1",severity="info"}'
+            value: 1
+      - expr: iceberg_table_problem{problem="missing_statistics"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'iceberg_table_problem{catalog="c",namespace="n",table="ms_bad",problem="missing_statistics",severity="info"}'
+            value: 214748364800
+      # Every problem above is covered; nothing else fires.
+      - expr: count(iceberg_table_problem)
+        eval_time: 10m
+        exp_samples:
+          - value: 21
+
+  - name: alert
+    interval: 1m
+    input_series:
+      - series: 'iceberg_table_scrape_success{catalog="c",namespace="n",table="broken"}'
+        values: '0+0x90'
+    promql_expr_test:
+      - expr: iceberg:tables_with_problem:count
+        eval_time: 5m
+        exp_samples:
+          - labels: 'iceberg:tables_with_problem:count{problem="scrape_failing",severity="warning"}'
+            value: 1
+    alert_rule_test:
+      - alertname: IcebergTableProblem
+        eval_time: 30m
+        exp_alerts: []
+      - alertname: IcebergTableProblem
+        eval_time: 70m
+        exp_alerts:
+          - exp_labels:
+              catalog: c
+              namespace: n
+              table: broken
+              problem: scrape_failing
+              severity: warning
+            exp_annotations:
+              summary: 'Iceberg table c/n.broken: scrape_failing'
+              description: 'Problem scrape_failing has been present for 1h (value 0).'
