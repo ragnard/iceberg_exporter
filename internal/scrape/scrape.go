@@ -402,7 +402,9 @@ func (s *Scraper) discoverCatalog(ctx context.Context, name string, cat catalog.
 			}
 		}
 
-		if !nested {
+		// Flat catalogs (Hive, Glue) only have top-level namespaces, so
+		// list namespaces at the root but never below it.
+		if !nested && len(ns) > 0 {
 			continue
 		}
 		children, err := cat.ListNamespaces(ctx, ns)
