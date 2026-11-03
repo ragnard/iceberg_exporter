@@ -48,9 +48,15 @@ type fakeCatalog struct {
 	children map[string][]table.Identifier
 	missing  map[string]bool
 	listed   []string // parents passed to ListNamespaces
+	typ      catalog.Type
 }
 
-func (f *fakeCatalog) CatalogType() catalog.Type { return catalog.REST }
+func (f *fakeCatalog) CatalogType() catalog.Type {
+	if f.typ == "" {
+		return catalog.REST
+	}
+	return f.typ
+}
 
 func (f *fakeCatalog) ListNamespaces(_ context.Context, parent table.Identifier) ([]table.Identifier, error) {
 	f.mu.Lock()
@@ -502,5 +508,28 @@ func TestPerCatalogScrapePolicy(t *testing.T) {
 	// Only archive disables manifest reads.
 	if fileStats["archive"] || !fileStats["prod"] {
 		t.Errorf("file stats collected = %v, want prod only", fileStats)
+	}
+}
+
+func TestDiscoverFlatCatalogs(t *testing.T) {
+	for _, typ := range []catalog.Type{catalog.Hive, catalog.Glue} {
+		t.Run(string(typ), func(t *testing.T) {
+			fc := &fakeCatalog{
+				typ:        typ,
+				namespaces: []table.Identifier{{"a"}, {"x"}},
+				tables: map[string][]table.Identifier{
+					"a": {{"a", "t"}},
+					"x": {{"x", "t"}},
+				},
+			}
+			got := discoveredNames(t, newTestScraper(t, testConfig(), fc))
+			if want := []string{"a.t", "x.t"}; !slices.Equal(got, want) {
+				t.Errorf("discovered = %v, want %v", got, want)
+			}
+			// Flat catalogs are listed only at the root.
+			if want := []string{""}; !slices.Equal(fc.listed, want) {
+				t.Errorf("listed namespaces = %q, want %q", fc.listed, want)
+			}
+		})
 	}
 }
